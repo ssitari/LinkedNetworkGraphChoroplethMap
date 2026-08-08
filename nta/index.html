@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NYC Citi Bike – NTA Trip Network</title>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      display: flex;
+      height: 100vh;
+      font-family: system-ui, sans-serif;
+      font-size: 13px;
+      background: #f4f5f7;
+      color: #222;
+    }
+
+    /* ── Controls panel ── */
+    #controls {
+      width: 220px;
+      flex-shrink: 0;
+      background: #fff;
+      border-right: 1px solid #ddd;
+      display: flex;
+      flex-direction: column;
+      padding: 16px 14px;
+      gap: 18px;
+      overflow-y: auto;
+    }
+
+    #controls h1 {
+      font-size: 13px;
+      font-weight: 700;
+      line-height: 1.35;
+      color: #111;
+    }
+
+    .control-group { display: flex; flex-direction: column; gap: 6px; }
+    .control-group label { font-weight: 600; color: #555; font-size: 11px; text-transform: uppercase; letter-spacing: .05em; }
+
+    select {
+      width: 100%;
+      padding: 5px 8px;
+      border: 1px solid #ccc;
+      border-radius: 4px;
+      background: #fafafa;
+      font-size: 13px;
+      cursor: pointer;
+    }
+    select:focus { outline: 2px solid #4e79a7; border-color: transparent; }
+
+    .radio-group { display: flex; flex-direction: column; gap: 5px; }
+    .radio-group label {
+      display: flex; align-items: center; gap: 7px;
+      font-size: 13px; font-weight: 400; color: #222;
+      text-transform: none; letter-spacing: 0;
+      cursor: pointer;
+    }
+
+    .slider-row { display: flex; align-items: center; gap: 8px; }
+    input[type=range] { flex: 1; cursor: pointer; accent-color: #4e79a7; }
+    #threshold-val { font-variant-numeric: tabular-nums; white-space: nowrap; color: #444; font-size: 12px; }
+
+    /* ── Stats ── */
+    #stats {
+      margin-top: auto;
+      padding-top: 12px;
+      border-top: 1px solid #eee;
+      font-size: 11px;
+      color: #666;
+      line-height: 1.8;
+    }
+    #stats strong { color: #333; }
+
+    /* ── Legend ── */
+    .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
+    .swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+
+    /* ── Chart ── */
+    #chart-container {
+      flex: 1;
+      position: relative;
+      overflow: hidden;
+    }
+    #chart { width: 100%; height: 100%; display: block; }
+
+    /* ── Tooltip ── */
+    #tooltip {
+      position: fixed;
+      display: none;
+      background: rgba(0,0,0,.82);
+      color: #fff;
+      padding: 8px 11px;
+      border-radius: 5px;
+      font-size: 12px;
+      line-height: 1.6;
+      pointer-events: none;
+      z-index: 10;
+      max-width: 200px;
+    }
+    #tooltip strong { font-size: 13px; }
+
+    /* ── Loading overlay ── */
+    #loading {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font-size: 15px;
+      color: #666;
+      background: #f4f5f7;
+    }
+
+    hr { border: none; border-top: 1px solid #eee; }
+  </style>
+</head>
+<body>
+
+<div id="controls">
+  <h1>NYC Citi Bike<br>NTA Trip Network</h1>
+
+  <div class="control-group">
+    <label>Month</label>
+    <select id="month-sel"></select>
+  </div>
+
+  <div class="control-group">
+    <label>Day of week</label>
+    <select id="day-sel"></select>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Node size</label>
+    <div class="radio-group">
+      <label><input type="radio" name="mode" value="total" checked> Total trips</label>
+      <label><input type="radio" name="mode" value="from"> Trips from (departures)</label>
+      <label><input type="radio" name="mode" value="to"> Trips to (arrivals)</label>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Min edge trips</label>
+    <div class="slider-row">
+      <input type="range" id="threshold-slider" min="0" value="0">
+      <span id="threshold-val">—</span>
+    </div>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
+    <label>Borough</label>
+    <div id="legend"></div>
+  </div>
+
+  <div id="stats">
+    <div>Edges shown: <strong id="stat-edges">—</strong></div>
+    <div>Active nodes: <strong id="stat-nodes">—</strong></div>
+  </div>
+</div>
+
+<div id="chart-container">
+  <div id="loading">Loading network data…</div>
+  <svg id="chart"></svg>
+</div>
+
+<div id="tooltip"></div>
+
+<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
