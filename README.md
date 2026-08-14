@@ -12,6 +12,14 @@ Built with [D3.js](https://d3js.org). No build step — plain HTML, CSS, and Jav
 
 ---
 
+## Live demo
+
+[View on GitHub Pages](https://ssitari.github.io/LinkedNetworkGraphChoroplethMap/)
+
+---
+
+---
+
 ## Status
 
 Early. The core linkage works but the interaction model, styling, and labeling are all unfinished, and
