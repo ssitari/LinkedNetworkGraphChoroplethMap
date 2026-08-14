@@ -187,6 +187,30 @@
 
 <div id="tooltip"></div>
 
+<style>
+  /* body is a row flex at 100vh, so a footer cannot be a flex child here
+     without becoming a third column -- it is pinned instead. */
+  /* Pinned top-right, which is the only genuinely empty corner. A
+     full-width bottom bar clipped the node counts in the control panel,
+     and a bottom-right pill covered the "Total trips" ramp's max tick. */
+  .page-credit {
+    position: fixed; right: 0; top: 0; z-index: 50;
+    padding: 4px 10px;
+    font: 11px/1.35 system-ui, sans-serif;
+    color: #8a8a8a; background: rgba(20,20,20,0.88);
+    border-bottom-left-radius: 4px;
+    pointer-events: none;
+  }
+  .page-credit a { color: #b9b9b9; pointer-events: auto; }
+  .page-credit a:hover { color: #e8e8e8; }
+</style>
+<footer class="page-credit">
+  Data:
+  <a href="https://citibikenyc.com/system-data" rel="noopener" target="_blank">Citi Bike System Data</a>.
+  Source code and method notes:
+  <a href="https://github.com/ssitari/LinkedNetworkGraphChoroplethMap" rel="noopener" target="_blank">ssitari/LinkedNetworkGraphChoroplethMap</a>.
+</footer>
+
 <script src="https://d3js.org/d3.v7.min.js"></script>
 <script src="app.js"></script>
 </body>
