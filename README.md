@@ -66,6 +66,12 @@ station-level file is roughly 400 MB. To regenerate them:
 2. **`preprocess_cdta_network.py`** — rolls the station-level table up to CDTA × month and writes
    `cdta_network_data.json`, the file the visualization actually loads. Intra-CDTA trips are dropped.
 3. **`preprocess_network.py`** — the equivalent step for the older NTA version.
+4. **`simplify_geojson.py`** — thins `CDTAs.geojson` for web delivery. The raw QGIS export is
+   4.4 MB: ~1,390 vertices per CDTA at 15 decimal places, roughly 40x more geometry than the map
+   panel can resolve. Douglas-Peucker at 0.0001 deg (~11 m, about 0.13 px at the rendered scale)
+   plus rounding to 5 decimal places brings it to 262 KB — 12% of the vertices, 6% of the bytes.
+   All 71 features, 208 rings, and every property are preserved; median area change is 0.04%.
+   Re-run it after any re-export from QGIS.
 
 `stations_2025.csv` is the station lookup table, mapping each Citi Bike station ID to its NTA, CDTA,
 MODZCTA, and census tract GEOID. `CDTAs.qmd` is the QGIS project used to prepare `CDTAs.geojson`.
