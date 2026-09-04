@@ -16,17 +16,23 @@ const BOROUGH_COLOR = {
 };
 const DEFAULT_COLOR = '#aaa';
 
+// Node opacity. Applied on the g.node group only -- never also on its children,
+// or the two multiply and inactive nodes all but vanish.
+const INACTIVE_OPACITY = 0.15;  // node carries no trips at the current threshold
+const FADED_OPACITY    = 0.07;  // node is not adjacent to the selection
+
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
-  month:     null,    // null = all months, 1-12 = specific month
-  mode:     'total',  // 'total' | 'from' | 'to'
-  threshold: 0,
+  month:        null,    // null = all months, 1-12 = specific month
+  mode:        'total',  // 'total' | 'from' | 'to'
+  thresholdPct: 50,      // share of edges hidden -- what the slider sets
+  threshold:    0,       // trip cutoff that percentile resolves to, this period
 };
 
 let selectedNode  = null;
 let lastMetrics   = null;
-let networkData   = null;
 let geoIdToIndex  = {};
+let sortedWeights = [];
 
 // ── SVG / layout ─────────────────────────────────────────────────────────────
 const container    = document.getElementById('chart-container');
@@ -66,7 +72,6 @@ Promise.all([
   d3.json('CDTAs.geojson'),
 ]).then(([data, geo]) => {
   document.getElementById('loading').style.display = 'none';
-  networkData = data;
 
   const { w, h } = dims();
   simNodes = data.nodes.map((n, i) => ({
@@ -87,6 +92,11 @@ Promise.all([
   initControls(data);
   initMap(geo, data);
   render(data);
+}).catch(err => {
+  console.error(err);
+  const el = document.getElementById('loading');
+  el.textContent = 'Could not load the network data. Try reloading the page.';
+  el.style.display = 'flex';
 });
 
 // ── Period helpers ────────────────────────────────────────────────────────────
@@ -122,7 +132,7 @@ function nodeMetrics(weightedLinks) {
 // ── Main render ───────────────────────────────────────────────────────────────
 function render(data) {
   rawWeighted = computeWeights(data);
-  initThresholdSlider(rawWeighted);
+  recomputeThresholdScale(rawWeighted);
   applyThresholdAndDraw(data);
 }
 
@@ -158,7 +168,7 @@ function applyThresholdAndDraw(data) {
     .attr('class', 'node')
     .attr('cursor', 'pointer')
     .call(drag())
-    .on('mouseover', (event, d) => showTooltip(event, d, data))
+    .on('mouseover', (event, d) => showTooltip(event, d))
     .on('mousemove', moveTooltip)
     .on('mouseout',  hideTooltip)
     .on('click', (event, d) => {
@@ -192,15 +202,15 @@ function applyThresholdAndDraw(data) {
 
   const nodeAll = nodeEnter.merge(nodeSel);
 
+  nodeAll.attr('opacity', d => metrics[d.index] > 0 ? 1 : INACTIVE_OPACITY);
+
   nodeAll.select('circle')
-    .attr('r',       d => rScale(metrics[d.index]))
-    .attr('fill',    d => BOROUGH_COLOR[d.borough] || DEFAULT_COLOR)
-    .attr('opacity', d => metrics[d.index] > 0 ? 1 : 0.15);
+    .attr('r',    d => rScale(metrics[d.index]))
+    .attr('fill', d => BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
 
   nodeAll.select('text')
     .attr('font-size', '9px')
     .attr('dy', d => rScale(metrics[d.index]) + 3)
-    .attr('opacity', d => metrics[d.index] > 0 ? 1 : 0.15)
     .text(d => d.short_name);
 
   simulation.force('collision', d3.forceCollide().radius(d => rScale(metrics[d.index]) + 3));
@@ -233,7 +243,7 @@ function highlight(node) {
   }
 
   nodeLayer.selectAll('g.node')
-    .attr('opacity', d => neighborSet.has(d.index) ? 1 : 0.07);
+    .attr('opacity', d => neighborSet.has(d.index) ? 1 : FADED_OPACITY);
 
   nodeLayer.selectAll('g.node circle')
     .attr('fill', d => {
@@ -252,7 +262,7 @@ function highlight(node) {
 
 function clearHighlight() {
   nodeLayer.selectAll('g.node')
-    .attr('opacity', d => (lastMetrics && lastMetrics[d.index] > 0) ? 1 : 0.15);
+    .attr('opacity', d => (lastMetrics && lastMetrics[d.index] > 0) ? 1 : INACTIVE_OPACITY);
 
   nodeLayer.selectAll('g.node circle')
     .attr('fill', d => BOROUGH_COLOR[d.borough] || DEFAULT_COLOR)
@@ -288,16 +298,14 @@ function drag() {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
-function showTooltip(event, d, data) {
-  const periods = periodIndices(state.month);
+function showTooltip(event, d) {
+  // Reads rawWeighted, already reduced to the selected period, and applies the
+  // same threshold as the draw -- so these totals match what is on screen.
   let out = 0, inn = 0;
-  for (const l of data.links) {
-    if (l.s === d.index || l.t === d.index) {
-      const ab = periods.reduce((s, k) => s + l.ab[k], 0);
-      const ba = periods.reduce((s, k) => s + l.ba[k], 0);
-      if (l.s === d.index) { out += ab; inn += ba; }
-      else                  { out += ba; inn += ab; }
-    }
+  for (const l of rawWeighted) {
+    if (l.total < state.threshold) continue;
+    if      (l.s === d.index) { out += l.ab; inn += l.ba; }
+    else if (l.t === d.index) { out += l.ba; inn += l.ab; }
   }
   tooltip.style('display', 'block').html(
     `<strong>${d.id}</strong><br>${d.short_name}<br>${d.borough}<br>` +
@@ -327,7 +335,7 @@ function initControls(data) {
   monthSel.on('change', function () {
     state.month = this.value ? +this.value : null;
     rawWeighted = computeWeights(data);
-    initThresholdSlider(rawWeighted);
+    recomputeThresholdScale(rawWeighted);
     applyThresholdAndDraw(data);
   });
 
@@ -337,25 +345,32 @@ function initControls(data) {
   });
 
   document.getElementById('threshold-slider').addEventListener('input', function () {
-    state.threshold = +this.value;
-    document.getElementById('threshold-val').textContent = (+this.value).toLocaleString();
+    state.thresholdPct = +this.value;
+    state.threshold    = resolveThreshold();
+    syncThresholdLabel();
     applyThresholdAndDraw(data);
   });
 }
 
-let sliderInitialized = false;
-function initThresholdSlider(weightedLinks) {
-  const weights = weightedLinks.map(l => l.total).sort(d3.ascending);
-  const q50 = Math.round(d3.quantile(weights, 0.50));
-  const q99 = Math.round(d3.quantile(weights, 0.99));
-  const slider = document.getElementById('threshold-slider');
-  slider.max = q99;
-  if (!sliderInitialized) {
-    slider.value = q50;
-    state.threshold = q50;
-    document.getElementById('threshold-val').textContent = q50.toLocaleString();
-    sliderInitialized = true;
-  }
+// The slider is percentile-spaced. Edge weights span four orders of magnitude
+// (q50 ~674, max ~1.5M over the full year), so a linear track buries every
+// useful cutoff in its leftmost 1%. Holding a percentile also keeps the filter
+// meaningful across periods -- an absolute cutoff tuned on twelve months of
+// trips empties out a single month.
+function resolveThreshold() {
+  if (!sortedWeights.length || state.thresholdPct <= 0) return 0;
+  return Math.round(d3.quantile(sortedWeights, state.thresholdPct / 100));
+}
+
+function syncThresholdLabel() {
+  document.getElementById('threshold-val').textContent =
+    state.threshold ? '\u2265' + state.threshold.toLocaleString() : 'all';
+}
+
+function recomputeThresholdScale(weightedLinks) {
+  sortedWeights = weightedLinks.map(l => l.total).sort(d3.ascending);
+  state.threshold = resolveThreshold();
+  syncThresholdLabel();
 }
 
 // ── Map ───────────────────────────────────────────────────────────────────────
@@ -442,10 +457,12 @@ function positionLegend() {
 }
 
 function updateLegend(maxVal, selectedIndex) {
-  const title = selectedIndex === null ? 'Total trips'
-    : state.mode === 'from' ? `Departures — ${simNodes[selectedIndex].id}`
-    : state.mode === 'to'   ? `Arrivals — ${simNodes[selectedIndex].id}`
-    :                         `Trips — ${simNodes[selectedIndex].id}`;
+  const metric = state.mode === 'from' ? 'Departures'
+    : state.mode === 'to' ? 'Arrivals'
+    :                       'Total trips';
+  const title = selectedIndex === null
+    ? metric
+    : `${state.mode === 'total' ? 'Trips' : metric} — ${simNodes[selectedIndex].id}`;
   mapSvg.select('.legend-title').text(title);
   mapSvg.select('.legend-max').text(maxVal.toLocaleString());
 }
@@ -495,7 +512,7 @@ function updateChoropleth(selectedIndex) {
 function showMapTooltip(event, f) {
   const nodeIdx = geoIdToIndex[f.properties.CDTA2020];
   if (nodeIdx !== undefined) {
-    showTooltip(event, simNodes[nodeIdx], networkData);
+    showTooltip(event, simNodes[nodeIdx]);
   } else {
     tooltip.style('display', 'block').html(
       `<strong>${f.properties.CDTA2020}</strong><br>` +
