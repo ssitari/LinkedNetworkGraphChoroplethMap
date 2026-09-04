@@ -46,6 +46,10 @@ const svg          = d3.select('#chart');
 const g            = svg.append('g');
 const linkLayer = g.append('g').attr('class', 'links');
 const nodeLayer = g.append('g').attr('class', 'nodes');
+// Appended last, so every label paints over every circle. While the labels
+// lived inside their own g.node, a node drawn later covered the text of one
+// drawn earlier, which is half of why the dense middle was unreadable.
+const labelLayer = g.append('g').attr('class', 'labels').attr('pointer-events', 'none');
 
 // ── Map SVG ───────────────────────────────────────────────────────────────────
 const mapContainer = document.getElementById('map-container');
@@ -233,32 +237,37 @@ function applyThresholdAndDraw(data) {
     .attr('stroke', '#fff')
     .attr('stroke-width', 1.2);
 
-  nodeEnter.append('text')
+  const nodeAll = nodeEnter.merge(nodeSel);
+
+  // Radius onto the datum: label placement needs it outside this function.
+  simNodes.forEach(d => { d.r = rScale(metrics[d.index]); });
+
+  nodeAll.attr('opacity', d => metrics[d.index] > 0 ? 1 : INACTIVE_OPACITY);
+
+  nodeAll.select('circle')
+    .attr('r',    d => d.r)
+    .attr('fill', d => BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
+
+  // ── Labels ──
+  // simNodes never changes, so this enters once: the text is set and measured a
+  // single time and the width cached on the datum for the placement pass.
+  labelLayer.selectAll('text.label')
+    .data(simNodes, d => d.id)
+    .enter().append('text')
+    .attr('class', 'label')
     .attr('text-anchor', 'middle')
     .attr('dominant-baseline', 'hanging')
-    .attr('pointer-events', 'none')
     .attr('fill', '#ddd')
+    .attr('font-size', '9px')
     .attr('font-weight', '600')
     .attr('paint-order', 'stroke')
     .attr('stroke', '#141414')
     .attr('stroke-width', '3px')
     .attr('stroke-linejoin', 'round')
-    .style('font-family', 'system-ui, sans-serif');
-
-  const nodeAll = nodeEnter.merge(nodeSel);
-
-  nodeAll.attr('opacity', d => metrics[d.index] > 0 ? 1 : INACTIVE_OPACITY);
-
-  nodeAll.select('circle')
-    .attr('r',    d => rScale(metrics[d.index]))
-    .attr('fill', d => BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
-
-  nodeAll.select('text')
-    .attr('font-size', '9px')
-    .attr('dy', d => rScale(metrics[d.index]) + 3)
+    .style('font-family', 'system-ui, sans-serif')
     .text(d => d.short_name);
 
-  simulation.force('collision', d3.forceCollide().radius(d => rScale(metrics[d.index]) + 3));
+  simulation.force('collision', d3.forceCollide().radius(d => d.r + 3));
   simulation.force('link').links(simLinks);
   simulation.alpha(0.6).restart();
 
@@ -266,6 +275,135 @@ function applyThresholdAndDraw(data) {
 
   updateChoropleth(selectedNode ? selectedNode.index : null);
   if (selectedNode) highlight(selectedNode);
+  refreshLabels();
+}
+
+// ── Label placement ───────────────────────────────────────────────────────────
+// Greedy, largest node first: each label takes the first of four slots -- below,
+// above, right, left -- that clears both the labels already placed and every
+// circle currently drawn. A node with no free slot goes unlabelled; its name is
+// still one hover away in the tooltip, so nothing is lost but the clutter.
+//
+// Only the slot *choice* is throttled. Coordinates are recomputed from the live
+// node position on every tick, so labels track their node smoothly instead of
+// lagging behind it between reassignments.
+const LABEL_H       = 11;  // line box of the 9px face
+const LABEL_GAP     = 3;
+const SLOTS         = [0, 1, 2, 3];
+const REPLACE_EVERY = 1;   // ticks between slot reassignments
+
+const LABEL_CHAR_W  = 5;   // ~9px semibold system-ui, used only as a fallback
+
+let labelNeighbors = null;  // while a node is selected, the set that keeps labels
+let tickCount      = 0;
+
+// getComputedTextLength() reports 0 until the text has been laid out, and the
+// first draw happens before that -- measuring in the enter selection silently
+// produced 43 zero-width boxes and hid every label. So measure lazily, keep
+// retrying until a real number arrives, and fall back to a character-count
+// estimate meanwhile: approximate boxes degrade far better than no labels.
+function measureLabels() {
+  labelLayer.selectAll('text.label').each(function (d) {
+    if (d.labelMeasured) return;
+    const w = this.getComputedTextLength() ||
+              (this.getBBox ? this.getBBox().width : 0);
+    if (w > 0) { d.labelW = w; d.labelMeasured = true; }
+    else if (!d.labelW) { d.labelW = d.short_name.length * LABEL_CHAR_W; }
+  });
+}
+
+function labelAnchor(d, slot) {
+  const r = d.r || 4, hw = (d.labelW || 0) / 2;
+  if (slot === 0) return { cx: d.x, top: d.y + r + LABEL_GAP };
+  if (slot === 1) return { cx: d.x, top: d.y - r - LABEL_GAP - LABEL_H };
+  if (slot === 2) return { cx: d.x + r + LABEL_GAP + hw, top: d.y - LABEL_H / 2 };
+  return { cx: d.x - r - LABEL_GAP - hw, top: d.y - LABEL_H / 2 };
+}
+
+function labelRect(d, slot) {
+  const a = labelAnchor(d, slot), hw = (d.labelW || 0) / 2;
+  return { x0: a.cx - hw, y0: a.top, x1: a.cx + hw, y1: a.top + LABEL_H };
+}
+
+function rectsOverlap(a, b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+function rectHitsCircle(r, cx, cy, rad) {
+  const nx = Math.max(r.x0, Math.min(cx, r.x1));
+  const ny = Math.max(r.y0, Math.min(cy, r.y1));
+  const dx = cx - nx, dy = cy - ny;
+  return dx * dx + dy * dy < rad * rad;
+}
+
+// Labelled only if the node is actually carrying trips, and -- when something
+// is selected -- only if it is adjacent to the selection. The rest are faded
+// to near-invisible, so labelling them would just be clutter over nothing.
+function labelEligible(d) {
+  return !!lastMetrics && lastMetrics[d.index] > 0 &&
+         (!labelNeighbors || labelNeighbors.has(d.index));
+}
+
+function assignLabelSlots() {
+  if (!lastMetrics) return;
+  measureLabels();
+  const drawn  = simNodes.filter(labelEligible);
+  const placed = [];
+
+  // Selection first when there is one, then biggest to smallest, so the labels
+  // that survive a crowded patch are the ones worth reading.
+  const priority = d =>
+    (labelNeighbors && selectedNode && d.index === selectedNode.index)
+      ? Infinity : lastMetrics[d.index];
+
+  simNodes.forEach(d => { d.showLabel = false; });
+
+  for (const d of drawn.slice().sort((a, b) => priority(b) - priority(a))) {
+    if (!d.labelW) continue;
+    const hit = pickSlot(d, drawn, placed);
+    if (!hit) continue;
+    d.showLabel = true;
+    d.slot = hit.slot;
+    placed.push(hit.rect);
+  }
+}
+
+// Two passes. The first also refuses to sit on another node's circle, which is
+// what you want wherever there is room. This graph rarely has room -- forceCollide
+// packs the nodes nearly touching, and demanding a circle-free slot hid all 43
+// labels -- so the second pass drops that and asks only that labels not cover each
+// other. Text over a circle still reads: the labels carry a dark halo and now sit
+// above every node.
+function pickSlot(d, drawn, placed) {
+  const order = d.slot === undefined
+    ? SLOTS : [d.slot, ...SLOTS.filter(s => s !== d.slot)];
+  for (const avoidCircles of [true, false]) {
+    for (const slot of order) {
+      const r = labelRect(d, slot);
+      if (placed.some(p => rectsOverlap(r, p))) continue;
+      if (avoidCircles &&
+          drawn.some(o => o !== d && rectHitsCircle(r, o.x, o.y, o.r || 4))) continue;
+      return { slot, rect: r };
+    }
+  }
+  return null;
+}
+
+function positionLabels() {
+  labelLayer.selectAll('text.label').each(function (d) {
+    if (!d.showLabel) { this.setAttribute('opacity', 0); return; }
+    const a = labelAnchor(d, d.slot);
+    this.setAttribute('opacity', 1);
+    this.setAttribute('x', a.cx);
+    this.setAttribute('y', a.top);
+  });
+}
+
+// Selection does not restart the simulation, so ticked() may never fire after a
+// click -- highlight and clearHighlight have to refresh the labels themselves.
+function refreshLabels() {
+  assignLabelSlots();
+  positionLabels();
 }
 
 // ── Highlight / clear ─────────────────────────────────────────────────────────
@@ -276,6 +414,8 @@ function highlight(node) {
     l => l.source.index === node.index || l.target.index === node.index
   );
   const neighborSet = new Set(adjLinks.flatMap(l => [l.source.index, l.target.index]));
+  neighborSet.add(node.index);  // keep the selection lit even with every edge filtered out
+  labelNeighbors = neighborSet;
 
   const weightMap = {};
   for (const l of adjLinks) {
@@ -303,9 +443,13 @@ function highlight(node) {
     .attr('stroke-opacity', l =>
       (l.source.index === node.index || l.target.index === node.index) ? 0.85 : 0.04
     );
+
+  refreshLabels();
 }
 
 function clearHighlight() {
+  labelNeighbors = null;
+
   nodeLayer.selectAll('g.node')
     .attr('opacity', d => (lastMetrics && lastMetrics[d.index] > 0) ? 1 : INACTIVE_OPACITY);
 
@@ -316,6 +460,8 @@ function clearHighlight() {
 
   linkLayer.selectAll('line')
     .attr('stroke-opacity', 0.35);
+
+  refreshLabels();
 }
 
 // ── Tick ──────────────────────────────────────────────────────────────────────
@@ -326,6 +472,9 @@ function ticked() {
 
   nodeLayer.selectAll('g.node')
     .attr('transform', d => `translate(${d.x},${d.y})`);
+
+  if (++tickCount % REPLACE_EVERY === 0) assignLabelSlots();
+  positionLabels();
 }
 
 // ── Drag ──────────────────────────────────────────────────────────────────────
