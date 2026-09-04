@@ -1,6 +1,6 @@
 # Linked Network Graph + Choropleth Map
 
-**Work in progress.** A dual-panel D3 visualization pairing a force-directed network graph with a
+A dual-panel D3 visualization pairing a force-directed network graph with a
 choropleth map of the same geography. Selecting a node in the network re-colors the map by that node's
 edge weights, so the abstract topology of the graph and the real geography of the places it describes
 can be read against each other.
@@ -16,15 +16,15 @@ Built with [D3.js](https://d3js.org). No build step — plain HTML, CSS, and Jav
 
 [View on GitHub Pages](https://ssitari.github.io/LinkedNetworkGraphChoroplethMap/)
 
----
+Built for desktop. The two panels are meant to be read side by side, so below 760px the page
+shows a notice rather than a cramped layout.
 
 ---
 
 ## Status
 
-Early. The core linkage works but the interaction model, styling, and labeling are all unfinished, and
-there is no README-worthy documentation of the config surface yet. Pushed for version control and
-backup rather than as a finished tool.
+Working and published. The geometry, the edge filter, and the node/map labelling have all been
+reworked; see the commit history for what changed and why.
 
 The `nta/` folder holds an earlier version of the same idea built on Neighborhood Tabulation Areas
 (NTAs) instead of CDTAs. It is superseded by the root version and kept only for reference.
@@ -38,7 +38,8 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
   selected node, using a sequential YlGnBu scale
 - **Month selector** — steps through the twelve months of 2025
 - **Node sizing** — by total trips, departures only, or arrivals only
-- **Edge threshold slider** — filters out low-volume edges to make structure visible
+- **Edge filter** — a percentile slider that hides the weakest edges. It resolves to a trip
+  count against whichever period is selected, so the filter stays meaningful when you switch months
 - **Borough coloring** — nodes colored by borough when no selection is active
 
 ---
@@ -65,7 +66,8 @@ station-level file is roughly 400 MB. To regenerate them:
    the script to wherever your trip CSVs live.
 2. **`preprocess_cdta_network.py`** — rolls the station-level table up to CDTA × month and writes
    `cdta_network_data.json`, the file the visualization actually loads. Intra-CDTA trips are dropped.
-3. **`preprocess_network.py`** — the equivalent step for the older NTA version.
+3. **`nta/preprocess_network.py`** — the equivalent step for the older NTA version, reading
+   `od_nta_month_dow.csv` and writing `nta/network_data.json`.
 4. **`simplify_geojson.py`** — thins `CDTAs.geojson` for web delivery. The raw QGIS export is
    4.4 MB: ~1,390 vertices per CDTA at 15 decimal places, roughly 40x more geometry than the map
    panel can resolve. Douglas-Peucker at 0.0001 deg (~11 m, about 0.13 px at the rendered scale)

@@ -16,6 +16,12 @@ const BOROUGH_COLOR = {
 };
 const DEFAULT_COLOR = '#aaa';
 
+// Map fills for districts the choropleth cannot colour. 28 of the 71 CDTAs have
+// no Citi Bike stations at all and never will; a served district can also fall
+// empty at a high filter. Those are different facts, so they get different greys.
+const NO_STATIONS_COLOR = '#1e1e1e';
+const NO_TRIPS_COLOR    = '#333333';
+
 // Node opacity. Applied on the g.node group only -- never also on its children,
 // or the two multiply and inactive nodes all but vanish.
 const INACTIVE_OPACITY = 0.15;  // node carries no trips at the current threshold
@@ -47,9 +53,11 @@ const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
 const choroplethScale = d3.scaleSequential(d3.interpolateYlGnBu);
 
+// Falls back to nominal dimensions: below the 760px breakpoint the panels are
+// display:none and measure 0, which would centre the simulation on the origin.
 function dims() {
   const r = container.getBoundingClientRect();
-  return { w: r.width, h: r.height };
+  return { w: r.width || 900, h: r.height || 700 };
 }
 
 svg.call(
@@ -58,6 +66,25 @@ svg.call(
 );
 
 svg.on('click.deselect', () => { clearHighlight(); selectedNode = null; updateChoropleth(null); });
+
+// ── Map zoom / deselect ───────────────────────────────────────────────────────
+let mapK       = 1;     // live map zoom scale, so borders stay hairline
+let selectedId = null;  // CDTA2020 code of the selected district, or null
+
+function pathStrokeWidth(f) {
+  return (f.properties.CDTA2020 === selectedId ? 2 : 0.5) / mapK;
+}
+
+mapSvg.call(
+  d3.zoom().scaleExtent([1, 12])
+    .on('zoom', e => {
+      mapK = e.transform.k;
+      mapG.attr('transform', e.transform);
+      mapG.selectAll('path').attr('stroke-width', pathStrokeWidth);
+    })
+);
+
+mapSvg.on('click.deselect', () => { clearHighlight(); selectedNode = null; updateChoropleth(null); });
 
 const tooltip = d3.select('#tooltip');
 
@@ -88,7 +115,7 @@ Promise.all([
     .alphaDecay(0.02)
     .on('tick', ticked);
 
-  buildLegend();
+  buildLegend(data);
   initControls(data);
   initMap(geo, data);
   render(data);
@@ -97,6 +124,24 @@ Promise.all([
   const el = document.getElementById('loading');
   el.textContent = 'Could not load the network data. Try reloading the page.';
   el.style.display = 'flex';
+});
+
+// ── Resize ────────────────────────────────────────────────────────────────────
+// Both panels reproject. The network previously kept its load-time forceCenter,
+// so the graph drifted off-centre as the window changed.
+let onMapResize = null;
+let resizeTimer = null;
+
+window.addEventListener('resize', () => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    if (simulation) {
+      const { w, h } = dims();
+      simulation.force('center', d3.forceCenter(w / 2, h / 2));
+      simulation.alpha(0.3).restart();
+    }
+    if (onMapResize) onMapResize();
+  }, 150);
 });
 
 // ── Period helpers ────────────────────────────────────────────────────────────
@@ -378,14 +423,16 @@ function initMap(geo, data) {
   data.nodes.forEach((n, i) => { geoIdToIndex[n.id] = i; });
 
   const r = mapContainer.getBoundingClientRect();
-  const projection = d3.geoMercator().fitSize([r.width, r.height], geo);
+  const projection = d3.geoMercator()
+    .fitSize([r.width || 900, r.height || 700], geo);
   const path = d3.geoPath(projection);
 
   mapG.selectAll('path')
     .data(geo.features, f => f.properties.CDTA2020)
     .enter().append('path')
     .attr('d', path)
-    .attr('fill', '#2a2a2a')
+    .attr('fill', f => geoIdToIndex[f.properties.CDTA2020] === undefined
+      ? NO_STATIONS_COLOR : NO_TRIPS_COLOR)
     .attr('stroke', '#444')
     .attr('stroke-width', 0.5)
     .attr('cursor', 'pointer')
@@ -410,12 +457,13 @@ function initMap(geo, data) {
 
   buildMapLegend();
 
-  window.addEventListener('resize', () => {
+  onMapResize = () => {
     const nr = mapContainer.getBoundingClientRect();
+    if (!nr.width || !nr.height) return;
     projection.fitSize([nr.width, nr.height], geo);
     mapG.selectAll('path').attr('d', path);
     positionLegend();
-  });
+  };
 }
 
 function buildMapLegend() {
@@ -470,6 +518,8 @@ function updateLegend(maxVal, selectedIndex) {
 function updateChoropleth(selectedIndex) {
   if (!mapG.selectAll('path').size()) return;
 
+  selectedId = selectedIndex === null ? null : simNodes[selectedIndex].id;
+
   const valueMap = {};
   if (selectedIndex === null) {
     simNodes.forEach(n => { valueMap[n.id] = lastMetrics ? lastMetrics[n.index] : 0; });
@@ -493,20 +543,13 @@ function updateChoropleth(selectedIndex) {
   mapG.selectAll('path')
     .attr('fill', f => {
       const id = f.properties.CDTA2020;
-      if (selectedIndex !== null && simNodes[selectedIndex].id === id) {
-        return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
-      }
+      if (id === selectedId) return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
       const val = valueMap[id];
-      return val ? choroplethScale(val) : '#2a2a2a';
+      if (val) return choroplethScale(val);
+      return geoIdToIndex[id] === undefined ? NO_STATIONS_COLOR : NO_TRIPS_COLOR;
     })
-    .attr('stroke', f =>
-      selectedIndex !== null && simNodes[selectedIndex].id === f.properties.CDTA2020
-        ? '#fff' : '#444'
-    )
-    .attr('stroke-width', f =>
-      selectedIndex !== null && simNodes[selectedIndex].id === f.properties.CDTA2020
-        ? 2 : 0.5
-    );
+    .attr('stroke', f => f.properties.CDTA2020 === selectedId ? '#fff' : '#444')
+    .attr('stroke-width', pathStrokeWidth);
 }
 
 function showMapTooltip(event, f) {
@@ -523,12 +566,28 @@ function showMapTooltip(event, f) {
 }
 
 // ── Legend ────────────────────────────────────────────────────────────────────
-function buildLegend() {
-  const cont = d3.select('#legend')
+function swatchRow(cont, color, label, isArea) {
+  const row = cont.append('div').attr('class', 'legend-item');
+  const sw = row.append('div')
+    .attr('class', isArea ? 'swatch area' : 'swatch')
+    .style('background', color);
+  if (isArea) sw.style('border', '1px solid #555');
+  row.append('span').text(label);
+}
+
+function buildLegend(data) {
+  // Driven by the data, not by BOROUGH_COLOR: Citi Bike does not serve Staten
+  // Island, so a hard-coded list advertises a swatch that never appears.
+  const present = new Set(data.nodes.map(n => n.borough));
+  const col = sel => d3.select(sel)
     .style('display', 'flex').style('flex-direction', 'column').style('gap', '5px');
-  Object.entries(BOROUGH_COLOR).forEach(([name, color]) => {
-    const row = cont.append('div').attr('class', 'legend-item');
-    row.append('div').attr('class', 'swatch').style('background', color);
-    row.append('span').text(name);
-  });
+
+  const nodeKey = col('#legend');
+  Object.entries(BOROUGH_COLOR)
+    .filter(([name]) => present.has(name))
+    .forEach(([name, color]) => swatchRow(nodeKey, color, name, false));
+
+  const mapKey = col('#map-key');
+  swatchRow(mapKey, NO_TRIPS_COLOR,    'No trips at this filter', true);
+  swatchRow(mapKey, NO_STATIONS_COLOR, 'No Citi Bike stations',   true);
 }

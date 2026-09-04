@@ -2,7 +2,13 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>NYC Citi Bike – CDTA Trip Network</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>NYC Citi Bike Trip Network, 2025</title>
+  <meta name="description" content="A force-directed network of 2025 NYC Citi Bike trips between Community District Tabulation Areas, linked to a choropleth map of the same geography.">
+  <meta property="og:title" content="NYC Citi Bike Trip Network, 2025">
+  <meta property="og:description" content="A force-directed network of 2025 NYC Citi Bike trips between Community District Tabulation Areas, linked to a choropleth map of the same geography.">
+  <meta property="og:type" content="website">
+  <meta property="og:url" content="https://ssitari.github.io/LinkedNetworkGraphChoroplethMap/">
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
 
@@ -34,11 +40,25 @@
       line-height: 1.35;
       color: #eee;
     }
+    #controls h1 .subtitle {
+      display: block;
+      margin-top: 5px;
+      font-size: 11px;
+      font-weight: 400;
+      line-height: 1.45;
+      color: #9a9a9a;
+    }
+    .hint {
+      margin-top: -8px;
+      font-size: 11px;
+      line-height: 1.5;
+      color: #8f8f8f;
+    }
 
     .control-group { display: flex; flex-direction: column; gap: 6px; }
     .control-group label {
       font-weight: 600;
-      color: #777;
+      color: #9a9a9a;
       font-size: 11px;
       text-transform: uppercase;
       letter-spacing: .05em;
@@ -74,14 +94,15 @@
       padding-top: 12px;
       border-top: 1px solid #2e2e2e;
       font-size: 11px;
-      color: #666;
+      color: #8f8f8f;
       line-height: 1.8;
     }
-    #stats strong { color: #aaa; }
+    #stats strong { color: #ccc; }
 
     /* ── Legend ── */
     .legend-item { display: flex; align-items: center; gap: 6px; font-size: 12px; }
     .swatch { width: 12px; height: 12px; border-radius: 50%; flex-shrink: 0; }
+    .swatch.area { border-radius: 2px; }
 
     /* ── Chart ── */
     #chart-container {
@@ -130,12 +151,42 @@
     }
 
     hr { border: none; border-top: 1px solid #2e2e2e; }
+
+    /* ── Small screens ──
+       This is a two-panel linked view: the network only means anything read
+       against the map beside it. Stacking them on a phone gives two useless
+       panels rather than one working page, so below 760px the page says so
+       instead. Note that the viewport meta tag above is only safe *because*
+       of this rule -- width=device-width without it would hand 56% of a
+       390px screen to the 220px control column. */
+    #small-screen { display: none; }
+
+    @media (max-width: 760px) {
+      body { display: block; height: auto; }
+      #controls, #chart-container, #map-container, .page-credit { display: none; }
+      #small-screen {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 100vh;
+        padding: 32px 24px;
+      }
+      #small-screen div { width: 100%; max-width: 30em; }
+      #small-screen h2 { font-size: 17px; color: #eee; margin-bottom: 12px; }
+      #small-screen p { font-size: 13px; line-height: 1.6; color: #9a9a9a; margin-bottom: 12px; }
+      #small-screen a { color: #8ab4dd; }
+    }
   </style>
 </head>
 <body>
 
 <div id="controls">
-  <h1>NYC Citi Bike<br>CDTA Trip Network</h1>
+  <h1>NYC Citi Bike Trip Network
+    <span class="subtitle">2025 &middot; by Community District Tabulation Area (CDTA)</span>
+  </h1>
+
+  <p class="hint">Click a node or a district to color the map by trips to and from it.
+  Scroll to zoom either panel, drag to pan.</p>
 
   <div class="control-group">
     <label>Month</label>
@@ -166,8 +217,13 @@
   <hr>
 
   <div class="control-group">
-    <label>Borough</label>
+    <label>Node color</label>
     <div id="legend"></div>
+  </div>
+
+  <div class="control-group">
+    <label>Map fill</label>
+    <div id="map-key"></div>
   </div>
 
   <div id="stats">
@@ -186,6 +242,16 @@
 </div>
 
 <div id="tooltip"></div>
+
+<div id="small-screen">
+  <div>
+    <h2>This one needs a wider screen</h2>
+    <p>It pairs a network graph with a linked map, side by side, and is built to be read
+    on a desktop display.</p>
+    <p>Open it on a laptop or desktop, or read the data and method notes on
+    <a href="https://github.com/ssitari/LinkedNetworkGraphChoroplethMap" rel="noopener">GitHub</a>.</p>
+  </div>
+</div>
 
 <style>
   /* body is a row flex at 100vh, so a footer cannot be a flex child here
@@ -211,7 +277,9 @@
   <a href="https://github.com/ssitari/LinkedNetworkGraphChoroplethMap" rel="noopener" target="_blank">ssitari/LinkedNetworkGraphChoroplethMap</a>.
 </footer>
 
-<script src="https://d3js.org/d3.v7.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/d3@7.9.0/dist/d3.min.js"
+        integrity="sha384-CjloA8y00+1SDAUkjs099PVfnY2KmDC2BZnws9kh8D/lX1s46w6EPhpXdqMfjK6i"
+        crossorigin="anonymous"></script>
 <script src="app.js"></script>
 
 <!-- Cloudflare Web Analytics -->
