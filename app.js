@@ -22,6 +22,15 @@ const DEFAULT_COLOR = '#aaa';
 const NO_STATIONS_COLOR = '#1e1e1e';
 const NO_TRIPS_COLOR    = '#333333';
 
+// Residual encoding. Edges get flat warm/cool by sign with opacity carrying the
+// magnitude, rather than a diverging ramp: a ramp's pale midpoint would make the
+// least interesting edges the brightest things on a dark ground.
+const EDGE_OVER  = '#f0a04b';
+const EDGE_UNDER = '#5b8fc9';
+// The map can take a true diverging ramp -- its neutral midpoint reads as "as
+// expected", which is a real category there. Reversed so over-connected is warm.
+const residColor = t => d3.interpolateRdBu(1 - t);
+
 // Node opacity. Applied on the g.node group only -- never also on its children,
 // or the two multiply and inactive nodes all but vanish.
 const INACTIVE_OPACITY = 0.15;  // node carries no trips at the current threshold
@@ -33,6 +42,7 @@ const state = {
   mode:        'total',  // 'total' | 'from' | 'to'
   thresholdPct: 50,      // share of edges hidden -- what the slider sets
   threshold:    0,       // trip cutoff that percentile resolves to, this period
+  edgeMetric:  'trips',  // 'trips' | 'residual'
 };
 
 let selectedNode  = null;
@@ -66,7 +76,12 @@ function dims() {
 
 svg.call(
   d3.zoom().scaleExtent([0.2, 10])
-    .on('zoom', e => g.attr('transform', e.transform))
+    .on('zoom', e => {
+      g.attr('transform', e.transform);
+      // Panning changes which boxes fall inside the panel, and zoom/pan does not
+      // wake the simulation, so nothing else would re-place them.
+      refreshLabels();
+    })
 );
 
 svg.on('click.deselect', () => { clearHighlight(); selectedNode = null; updateChoropleth(null); });
@@ -115,6 +130,12 @@ Promise.all([
     .force('link',      d3.forceLink([]).id(d => d.index).distance(80))
     .force('charge',    d3.forceManyBody().strength(-200))
     .force('center',    d3.forceCenter(w / 2, h / 2))
+    // forceCenter recentres but does not compress. Weakening link strength in
+    // residual mode lets charge push the graph wider than the panel, which
+    // clipped labels off both edges, so a mild pull toward the middle bounds it.
+    // Stronger on x because the panel is far taller than it is wide.
+    .force('x',         d3.forceX(w / 2).strength(0.07))
+    .force('y',         d3.forceY(h / 2).strength(0.03))
     .force('collision', d3.forceCollide(10))
     .alphaDecay(0.02)
     .on('tick', ticked);
@@ -142,11 +163,114 @@ window.addEventListener('resize', () => {
     if (simulation) {
       const { w, h } = dims();
       simulation.force('center', d3.forceCenter(w / 2, h / 2));
+      simulation.force('x').x(w / 2);
+      simulation.force('y').y(h / 2);
       simulation.alpha(0.3).restart();
     }
     if (onMapResize) onMapResize();
   }, 150);
 });
+
+// ── Gravity model ─────────────────────────────────────────────────────────────
+// Trips between two districts are overwhelmingly a function of how much cycling
+// each does and how far apart they are -- for 2025 that is ~90% of the variance,
+// with a distance exponent near -3.9. A force layout weighted by raw trips is
+// therefore mostly redrawing the map beside it. Fitting that expectation and
+// showing the residual leaves the part the map cannot tell you: which pairs ride
+// together far more than their size and separation predict.
+//
+// log(trips) ~ b0 + b1*log(mass_i * mass_j) + b2*log(km), by ordinary least
+// squares. Three parameters over at most 846 rows, so the normal equations are
+// solved directly rather than pulling in a regression library.
+let centroids  = {};    // CDTA2020 -> [lon, lat]
+let gravityFit = null;  // { r2, n } once fitted
+
+function computeCentroids(geo) {
+  geo.features.forEach(f => {
+    const polys = f.geometry.type === 'Polygon'
+      ? [f.geometry.coordinates] : f.geometry.coordinates;
+    let ax = 0, ay = 0, aa = 0;
+    for (const poly of polys) {
+      const ring = poly[0];
+      for (let i = 0; i < ring.length - 1; i++) {
+        const [x1, y1] = ring[i], [x2, y2] = ring[i + 1];
+        const cross = x1 * y2 - x2 * y1;
+        aa += cross; ax += (x1 + x2) * cross; ay += (y1 + y2) * cross;
+      }
+    }
+    if (aa) centroids[f.properties.CDTA2020] = [ax / (3 * aa), ay / (3 * aa)];
+  });
+}
+
+function centroidKm(idA, idB) {
+  const a = centroids[idA], b = centroids[idB];
+  if (!a || !b) return 0;
+  const midLat = (a[1] + b[1]) / 2 * Math.PI / 180;
+  return Math.hypot((b[0] - a[0]) * 111.32 * Math.cos(midLat),
+                    (b[1] - a[1]) * 110.57);
+}
+
+// Gaussian elimination with partial pivoting on a 3x3 system.
+function solve3(M, v) {
+  const a = M.map((row, i) => row.concat(v[i]));
+  for (let c = 0; c < 3; c++) {
+    let p = c;
+    for (let r = c + 1; r < 3; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+    if (Math.abs(a[p][c]) < 1e-12) return null;
+    [a[c], a[p]] = [a[p], a[c]];
+    for (let r = 0; r < 3; r++) {
+      if (r === c) continue;
+      const k = a[r][c] / a[c][c];
+      for (let j = c; j < 4; j++) a[r][j] -= k * a[c][j];
+    }
+  }
+  return [a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]];
+}
+
+// Fitted over every edge in the period, not just the ones on screen, so dragging
+// the filter changes what you see without moving the yardstick you see it against.
+function computeGravity(links) {
+  const mass = new Float64Array(simNodes.length);
+  for (const l of links) { mass[l.s] += l.total; mass[l.t] += l.total; }
+
+  const rows = [];
+  for (const l of links) {
+    l.resid = 0;
+    l.ratio = 1;
+    const km = centroidKm(simNodes[l.s].id, simNodes[l.t].id);
+    const mProd = mass[l.s] * mass[l.t];
+    if (km <= 0 || mProd <= 0 || l.total <= 0) continue;
+    rows.push([Math.log(mProd), Math.log(km), Math.log(l.total), l]);
+  }
+  if (rows.length < 10) { gravityFit = null; return; }
+
+  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], T = [0, 0, 0];
+  let mean = 0;
+  for (const [lm, ld, lt] of rows) {
+    const x = [1, lm, ld];
+    for (let i = 0; i < 3; i++) {
+      for (let j = 0; j < 3; j++) S[i][j] += x[i] * x[j];
+      T[i] += x[i] * lt;
+    }
+    mean += lt;
+  }
+  mean /= rows.length;
+
+  const b = solve3(S, T);
+  if (!b) { gravityFit = null; return; }
+
+  let ssRes = 0, ssTot = 0;
+  for (const [lm, ld, lt, l] of rows) {
+    const pred = b[0] + b[1] * lm + b[2] * ld;
+    l.resid = lt - pred;
+    l.ratio = Math.exp(l.resid);
+    ssRes += (lt - pred) ** 2;
+    ssTot += (lt - mean) ** 2;
+  }
+  gravityFit = { r2: ssTot ? 1 - ssRes / ssTot : 0, n: rows.length };
+}
+
+const useResidual = () => state.edgeMetric === 'residual';
 
 // ── Period helpers ────────────────────────────────────────────────────────────
 function periodIndices(month) {
@@ -181,6 +305,7 @@ function nodeMetrics(weightedLinks) {
 // ── Main render ───────────────────────────────────────────────────────────────
 function render(data) {
   rawWeighted = computeWeights(data);
+  computeGravity(rawWeighted);
   recomputeThresholdScale(rawWeighted);
   applyThresholdAndDraw(data);
 }
@@ -195,6 +320,18 @@ function applyThresholdAndDraw(data) {
   const rScale = d3.scaleSqrt().domain([0, maxMetric]).range([4, 28]);
   const wScale = d3.scalePow().exponent(0.4).domain([1, maxWeight]).range([0.5, 10]).clamp(true);
 
+  // Symmetric domain so an edge twice its expectation and one at half of it read
+  // as equally far from neutral.
+  const maxResid = d3.max(activeLinks, l => Math.abs(l.resid || 0)) || 1;
+  // Raw trips are so skewed that a sqrt ramp left most edges hairline and a few
+  // thick. Residuals in log space are near-normal, so the same ramp gave almost
+  // every edge mid weight and turned the graph into one orange mass. Exponents
+  // above 1 put the ink back on the outliers.
+  const residWidth   = d3.scalePow().exponent(1.6)
+    .domain([0, maxResid]).range([0.3, 8]).clamp(true);
+  const residOpacity = d3.scalePow().exponent(2)
+    .domain([0, maxResid]).range([0.03, 0.85]).clamp(true);
+
   const simLinks = activeLinks.map(l => ({ ...l, source: l.s, target: l.t }));
 
   // ── Links ──
@@ -202,10 +339,13 @@ function applyThresholdAndDraw(data) {
     .data(simLinks, l => `${l.s}-${l.t}`);
 
   linkSel.enter().append('line')
-    .attr('stroke', '#888')
-    .attr('stroke-opacity', 0.35)
     .merge(linkSel)
-    .attr('stroke-width', l => wScale(l.total));
+    .attr('stroke', l => !useResidual() ? '#888'
+      : (l.resid || 0) >= 0 ? EDGE_OVER : EDGE_UNDER)
+    .attr('stroke-opacity', l => useResidual()
+      ? residOpacity(Math.abs(l.resid || 0)) : 0.35)
+    .attr('stroke-width', l => useResidual()
+      ? residWidth(Math.abs(l.resid || 0)) : wScale(l.total));
 
   linkSel.exit().remove();
 
@@ -268,7 +408,26 @@ function applyThresholdAndDraw(data) {
     .text(d => d.short_name);
 
   simulation.force('collision', d3.forceCollide().radius(d => d.r + 3));
-  simulation.force('link').links(simLinks);
+
+  // The layout follows the active metric, which is the whole point: under trips
+  // it settles into a smeared copy of the map; under residual the pairs that beat
+  // their geography should pull together instead. Distance alone did not do it --
+  // 400+ links of equal strength collapse into a ball however far apart you ask
+  // them to sit -- so strength is scaled too, leaving unsurprising pairs barely
+  // able to influence where anything goes. Both are multiples of d3's own
+  // 1/min(degree) default, which is what keeps hub nodes from tearing loose.
+  const deg = new Float64Array(simNodes.length);
+  for (const l of simLinks) { deg[l.s]++; deg[l.t]++; }
+  const baseStrength = l => 1 / Math.max(1, Math.min(deg[l.s], deg[l.t]));
+
+  simulation.force('link')
+    .distance(l => useResidual()
+      ? 130 - 85 * Math.max(0, l.resid || 0) / maxResid
+      : 80)
+    .strength(l => useResidual()
+      ? baseStrength(l) * (0.05 + 0.95 * Math.max(0, l.resid || 0) / maxResid)
+      : baseStrength(l))
+    .links(simLinks);
   simulation.alpha(0.6).restart();
 
   updateStats(activeLinks.length, Array.from(metrics).filter(v => v > 0).length);
@@ -329,6 +488,17 @@ function rectsOverlap(a, b) {
   return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
 }
 
+// Labels live inside the zoom group, so a box that is fine in layout coordinates
+// can still be off-screen. Project through the live transform and require the whole
+// box to land inside the panel -- a half-clipped label is worse than none, and when
+// zoomed in this correctly stops labelling nodes that have scrolled out of view.
+function insidePanel(r) {
+  const t = d3.zoomTransform(svg.node());
+  const { w, h } = dims();
+  return t.applyX(r.x0) >= 2 && t.applyX(r.x1) <= w - 2 &&
+         t.applyY(r.y0) >= 2 && t.applyY(r.y1) <= h - 2;
+}
+
 function rectHitsCircle(r, cx, cy, rad) {
   const nx = Math.max(r.x0, Math.min(cx, r.x1));
   const ny = Math.max(r.y0, Math.min(cy, r.y1));
@@ -380,6 +550,7 @@ function pickSlot(d, drawn, placed) {
   for (const avoidCircles of [true, false]) {
     for (const slot of order) {
       const r = labelRect(d, slot);
+      if (!insidePanel(r)) continue;
       if (placed.some(p => rectsOverlap(r, p))) continue;
       if (avoidCircles &&
           drawn.some(o => o !== d && rectHitsCircle(r, o.x, o.y, o.r || 4))) continue;
@@ -417,7 +588,9 @@ function highlight(node) {
   neighborSet.add(node.index);  // keep the selection lit even with every edge filtered out
   labelNeighbors = neighborSet;
 
-  const weightMap = {};
+  // Residual is a property of the unordered pair, so the departures/arrivals
+  // split does not apply to it -- that control keeps sizing nodes by trips.
+  const weightMap = {}, residMap = {};
   for (const l of adjLinks) {
     const isSource = l.source.index === node.index;
     const otherIdx = isSource ? l.target.index : l.source.index;
@@ -425,7 +598,9 @@ function highlight(node) {
       : state.mode === 'from' ? (isSource ? l.ab : l.ba)
       : (isSource ? l.ba : l.ab);
     weightMap[otherIdx] = val;
+    residMap[otherIdx]  = l.resid || 0;
   }
+  const maxAdjResid = d3.max(Object.values(residMap), Math.abs) || 1;
 
   nodeLayer.selectAll('g.node')
     .attr('opacity', d => neighborSet.has(d.index) ? 1 : FADED_OPACITY);
@@ -433,6 +608,10 @@ function highlight(node) {
   nodeLayer.selectAll('g.node circle')
     .attr('fill', d => {
       if (d.index === node.index) return BOROUGH_COLOR[d.borough] || DEFAULT_COLOR;
+      if (useResidual()) {
+        if (!(d.index in residMap)) return BOROUGH_COLOR[d.borough] || DEFAULT_COLOR;
+        return residColor(0.5 + 0.5 * residMap[d.index] / maxAdjResid);
+      }
       const w = weightMap[d.index];
       return w ? choroplethScale(w) : (BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
     })
@@ -501,11 +680,21 @@ function showTooltip(event, d) {
     if      (l.s === d.index) { out += l.ab; inn += l.ba; }
     else if (l.t === d.index) { out += l.ba; inn += l.ab; }
   }
+  let extra = '';
+  if (useResidual()) {
+    let s = 0, n = 0;
+    for (const l of rawWeighted) {
+      if (l.total < state.threshold) continue;
+      if (l.s === d.index || l.t === d.index) { s += l.resid || 0; n++; }
+    }
+    if (n) extra = `<br>Mean vs. expected: ${Math.exp(s / n).toFixed(2)}×`;
+  }
+
   tooltip.style('display', 'block').html(
     `<strong>${d.id}</strong><br>${d.short_name}<br>${d.borough}<br>` +
     `Departures: ${out.toLocaleString()}<br>` +
     `Arrivals: &nbsp;${inn.toLocaleString()}<br>` +
-    `Total: &nbsp;&nbsp;&nbsp;&nbsp;${(out + inn).toLocaleString()}`
+    `Total: &nbsp;&nbsp;&nbsp;&nbsp;${(out + inn).toLocaleString()}` + extra
   );
   moveTooltip(event);
 }
@@ -518,6 +707,21 @@ function hideTooltip() { tooltip.style('display', 'none'); }
 function updateStats(edges, nodes) {
   document.getElementById('stat-edges').textContent = edges.toLocaleString();
   document.getElementById('stat-nodes').textContent = nodes;
+  document.getElementById('stat-r2').textContent =
+    gravityFit ? gravityFit.r2.toFixed(3) : '\u2014';
+
+  // Residuals average zero over every edge -- that is what least squares does --
+  // but the filter keeps edges by trip volume, and volume correlates with the
+  // residual (r = +0.32 for 2025). So the visible set is not centred on 1x, and
+  // at the p50 default it sits near 1.35x. Recentring the ramp would bury that;
+  // reporting it lets you read the map knowing which way it leans.
+  let s = 0, n = 0;
+  for (const l of rawWeighted) {
+    if (l.total < state.threshold) continue;
+    s += l.resid || 0; n++;
+  }
+  document.getElementById('stat-bias').textContent =
+    n ? Math.exp(s / n).toFixed(2) + '\u00d7' : '\u2014';
 }
 
 // ── Controls ──────────────────────────────────────────────────────────────────
@@ -529,12 +733,18 @@ function initControls(data) {
   monthSel.on('change', function () {
     state.month = this.value ? +this.value : null;
     rawWeighted = computeWeights(data);
+    computeGravity(rawWeighted);
     recomputeThresholdScale(rawWeighted);
     applyThresholdAndDraw(data);
   });
 
   d3.selectAll('input[name="mode"]').on('change', function () {
     state.mode = this.value;
+    applyThresholdAndDraw(data);
+  });
+
+  d3.selectAll('input[name="edge"]').on('change', function () {
+    state.edgeMetric = this.value;
     applyThresholdAndDraw(data);
   });
 
@@ -570,6 +780,7 @@ function recomputeThresholdScale(weightedLinks) {
 // ── Map ───────────────────────────────────────────────────────────────────────
 function initMap(geo, data) {
   data.nodes.forEach((n, i) => { geoIdToIndex[n.id] = i; });
+  computeCentroids(geo);
 
   const r = mapContainer.getBoundingClientRect();
   const projection = d3.geoMercator()
@@ -617,12 +828,16 @@ function initMap(geo, data) {
 
 function buildMapLegend() {
   const defs = mapSvg.append('defs');
-  const grad = defs.append('linearGradient').attr('id', 'clegend-grad');
-  d3.range(0, 1.01, 0.05).forEach(t => {
-    grad.append('stop')
-      .attr('offset', `${(t * 100).toFixed(0)}%`)
-      .attr('stop-color', d3.interpolateYlGnBu(t));
-  });
+  const ramp = (id, interp) => {
+    const grad = defs.append('linearGradient').attr('id', id);
+    d3.range(0, 1.01, 0.05).forEach(t => {
+      grad.append('stop')
+        .attr('offset', `${(t * 100).toFixed(0)}%`)
+        .attr('stop-color', interp(t));
+    });
+  };
+  ramp('clegend-grad', d3.interpolateYlGnBu);
+  ramp('clegend-div', residColor);
 
   const lg = mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
 
@@ -642,6 +857,13 @@ function buildMapLegend() {
     .attr('fill', '#888').attr('font-size', '9px')
     .attr('font-family', 'system-ui, sans-serif');
 
+  // Only meaningful on the diverging ramp, where the midpoint is a real category
+  // -- "as expected" -- rather than just half of something.
+  lg.append('text').attr('class', 'legend-mid')
+    .attr('y', 18).attr('text-anchor', 'middle')
+    .attr('fill', '#888').attr('font-size', '9px')
+    .attr('font-family', 'system-ui, sans-serif').text('1×');
+
   positionLegend();
 }
 
@@ -651,17 +873,34 @@ function positionLegend() {
   mapSvg.select('.map-legend').attr('transform', `translate(12, ${r.height - 28})`);
   mapSvg.select('.legend-bar').attr('width', LW);
   mapSvg.select('.legend-max').attr('x', LW);
+  mapSvg.select('.legend-mid').attr('x', LW / 2);
 }
 
 function updateLegend(maxVal, selectedIndex) {
+  const who = selectedIndex === null ? null : simNodes[selectedIndex].id;
+
+  if (useResidual()) {
+    // maxVal is the largest absolute log-residual on show. The ramp is symmetric
+    // about it, so twice expected and half expected sit equally far from neutral.
+    mapSvg.select('.legend-title')
+      .text(who === null ? 'Mean vs. expected' : `Vs. expected — ${who}`);
+    mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-div)');
+    mapSvg.select('.legend-min').text(`${Math.exp(-maxVal).toFixed(2)}×`);
+    mapSvg.select('.legend-max').text(`${Math.exp(maxVal).toFixed(1)}×`);
+    mapSvg.select('.legend-mid').attr('opacity', 1);
+    return;
+  }
+
   const metric = state.mode === 'from' ? 'Departures'
     : state.mode === 'to' ? 'Arrivals'
     :                       'Total trips';
-  const title = selectedIndex === null
-    ? metric
-    : `${state.mode === 'total' ? 'Trips' : metric} — ${simNodes[selectedIndex].id}`;
-  mapSvg.select('.legend-title').text(title);
+  mapSvg.select('.legend-title')
+    .text(who === null ? metric
+      : `${state.mode === 'total' ? 'Trips' : metric} — ${who}`);
+  mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-grad)');
+  mapSvg.select('.legend-min').text('0');
   mapSvg.select('.legend-max').text(maxVal.toLocaleString());
+  mapSvg.select('.legend-mid').attr('opacity', 0);
 }
 
 function updateChoropleth(selectedIndex) {
@@ -670,6 +909,45 @@ function updateChoropleth(selectedIndex) {
   selectedId = selectedIndex === null ? null : simNodes[selectedIndex].id;
 
   const valueMap = {};
+
+  if (useResidual()) {
+    // With a district picked: how each partner compares to its own prediction.
+    // With nothing picked: each district's mean log-residual over the edges on
+    // show, which reads as "does this place beat its geography overall".
+    if (selectedIndex === null) {
+      const sum = new Float64Array(simNodes.length);
+      const cnt = new Float64Array(simNodes.length);
+      for (const l of rawWeighted) {
+        if (l.total < state.threshold) continue;
+        sum[l.s] += l.resid || 0; cnt[l.s]++;
+        sum[l.t] += l.resid || 0; cnt[l.t]++;
+      }
+      simNodes.forEach(n => {
+        if (cnt[n.index]) valueMap[n.id] = sum[n.index] / cnt[n.index];
+      });
+    } else {
+      for (const l of rawWeighted) {
+        if (l.total < state.threshold) continue;
+        if (l.s === selectedIndex)      valueMap[simNodes[l.t].id] = l.resid || 0;
+        else if (l.t === selectedIndex) valueMap[simNodes[l.s].id] = l.resid || 0;
+      }
+    }
+
+    const m = d3.max(Object.values(valueMap), Math.abs) || 1;
+    updateLegend(m, selectedIndex);
+
+    mapG.selectAll('path')
+      .attr('fill', f => {
+        const id = f.properties.CDTA2020;
+        if (id === selectedId) return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
+        if (id in valueMap) return residColor(0.5 + 0.5 * valueMap[id] / m);
+        return geoIdToIndex[id] === undefined ? NO_STATIONS_COLOR : NO_TRIPS_COLOR;
+      })
+      .attr('stroke', f => f.properties.CDTA2020 === selectedId ? '#fff' : '#444')
+      .attr('stroke-width', pathStrokeWidth);
+    return;
+  }
+
   if (selectedIndex === null) {
     simNodes.forEach(n => { valueMap[n.id] = lastMetrics ? lastMetrics[n.index] : 0; });
   } else {

@@ -41,6 +41,46 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
 - **Edge filter** — a percentile slider that hides the weakest edges. It resolves to a trip
   count against whichever period is selected, so the filter stays meaningful when you switch months
 - **Borough coloring** — nodes colored by borough when no selection is active
+- **Edge weight** — raw trips, or each pair's trips divided by what a gravity model predicts
+
+---
+
+## Edge weight: trips vs. vs-expected
+
+Bike trips between two districts are almost entirely a function of how much cycling each
+does and how far apart they are. Fitting
+
+```
+log(trips) ~ b0 + b1 * log(mass_i * mass_j) + b2 * log(km)
+```
+
+over 2025 gives **R² = 0.898** with a distance exponent near **−3.9** — steep even by gravity-model
+standards, which is what you would expect of a bicycle. Distance alone accounts for 68%.
+
+That is a problem for the default view. A force layout weighted by raw trips is arranging nodes by
+a quantity that is 90% size and distance, so it settles into a smeared, less legible copy of the map
+sitting right next to it. The two panels agree because they are showing the same thing.
+
+**Vs. expected** divides each pair's trips by that prediction and weights the graph by the residual,
+so the layout organises around what the model *cannot* explain. The pairs that surface are corridors:
+Washington Heights–Inwood connects to the Financial District, Chelsea and the Upper West Side far
+more than distance allows, which is the Hudson River Greenway; Williamsburg–Greenpoint to Astoria is
+the Pulaski Bridge. None of that is visible when volume drives the encoding.
+
+The model is fitted in the browser over whichever period is selected, on every edge in that period —
+not just the ones passing the filter — so moving the filter changes what you see without moving the
+yardstick.
+
+Three caveats, all of them visible in the interface:
+
+- **Thin pairs produce nonsense ratios.** A pair with nine trips posted 23× expected in testing. The
+  edge filter doubles as the noise floor; raise it before trusting anything.
+- **The filter biases the residuals upward.** Residuals average zero across all edges by
+  construction, but volume correlates with residual (r = +0.32), so the *visible* set averages about
+  1.35× at the default. The map keeps 1× as its neutral point rather than recentring, and the panel
+  reports the visible mean so you can read the lean.
+- **Residuals are a property of the unordered pair**, so the departures/arrivals control does not
+  apply to them; it keeps sizing nodes by trips.
 
 ---
 

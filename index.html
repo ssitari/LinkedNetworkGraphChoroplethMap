@@ -30,7 +30,7 @@
       display: flex;
       flex-direction: column;
       padding: 16px 14px;
-      gap: 18px;
+      gap: 13px;
       overflow-y: auto;
     }
 
@@ -54,6 +54,12 @@
       line-height: 1.5;
       color: #8f8f8f;
     }
+    .note {
+      font-size: 10px;
+      line-height: 1.45;
+      color: #7d7d7d;
+    }
+    .note em { color: #9a9a9a; font-style: normal; font-weight: 600; }
 
     .control-group { display: flex; flex-direction: column; gap: 6px; }
     .control-group label {
@@ -185,7 +191,7 @@
     <span class="subtitle">2025 &middot; by Community District Tabulation Area (CDTA)</span>
   </h1>
 
-  <p class="hint">Click a node or a district to color the map by trips to and from it.
+  <p class="hint">Click a node or a district to color the map by its links.
   Scroll to zoom either panel, drag to pan.</p>
 
   <div class="control-group">
@@ -207,11 +213,25 @@
   <hr>
 
   <div class="control-group">
+    <label>Edge weight</label>
+    <div class="radio-group">
+      <label><input type="radio" name="edge" value="trips" checked> Trips</label>
+      <label><input type="radio" name="edge" value="residual"> Vs. expected</label>
+    </div>
+    <p class="note">Trips are ~90% predicted by district size and distance.
+    <em>Vs. expected</em> divides by that prediction.</p>
+  </div>
+
+  <hr>
+
+  <div class="control-group">
     <label>Min edge trips</label>
     <div class="slider-row">
       <input type="range" id="threshold-slider" min="0" max="99" step="1" value="50">
       <span id="threshold-val">—</span>
     </div>
+    <p class="note">Also a noise floor: nine trips can post a 20× ratio
+    and mean nothing.</p>
   </div>
 
   <hr>
@@ -229,6 +249,8 @@
   <div id="stats">
     <div>Edges shown: <strong id="stat-edges">—</strong></div>
     <div>Active nodes: <strong id="stat-nodes">—</strong></div>
+    <div>Gravity model R&sup2;: <strong id="stat-r2">—</strong></div>
+    <div>Shown vs. expected: <strong id="stat-bias">—</strong></div>
   </div>
 </div>
 
