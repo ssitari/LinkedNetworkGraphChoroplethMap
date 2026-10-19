@@ -48,39 +48,64 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
 ## Edge weight: trips vs. vs-expected
 
 Bike trips between two districts are almost entirely a function of how much cycling each
-does and how far apart they are. Fitting
+does and how far apart they are. That is a problem for the default view. A force layout weighted by
+raw trips is arranging nodes by a quantity that is mostly size and distance, so it settles into a
+smeared, less legible copy of the map sitting right next to it. The two panels agree because they
+are showing the same thing.
+
+**Vs. expected** fits a gravity model, divides each pair's trips by what it predicts, and weights
+the graph by the result, so the layout organises around what the model *cannot* explain.
+
+### The model
+
+A Poisson regression over every pair of districts, including pairs with no trips:
 
 ```
-log(trips) ~ b0 + b1 * log(mass_i * mass_j) + b2 * log(km)
+log E[trips_ij] = a_i + a_j + f(km_ij)
 ```
 
-over 2025 gives **R² = 0.898** with a distance exponent near **−3.9** — steep even by gravity-model
-standards, which is what you would expect of a bicycle. Distance alone accounts for 68%.
+- **`a_i`, `a_j`** — one term per district. They absorb how much cycling each district does, so
+  every district's expected total equals its actual total. What is left over says only *who* a
+  district trades with, never *how much* it rides.
+- **`f(km)`** — distance between district centroids, as a piecewise-linear curve in log(km) that
+  can bend at 2, 4, 8 and 16 km. A single power law cannot fit both ends: the curve that fits the
+  busy short pairs decays too slowly at range. For 2025 the fitted slope is roughly flat under 2 km,
+  then steepens to −1.7, −3.6, −4.2 and −5.8 by segment — about what you would expect of a bicycle.
 
-That is a problem for the default view. A force layout weighted by raw trips is arranging nodes by
-a quantity that is 90% size and distance, so it settles into a smeared, less legible copy of the map
-sitting right next to it. The two panels agree because they are showing the same thing.
+Over 2025 the model explains **95.7% of the deviance** (the Poisson analogue of R²), and actual and
+expected trips agree to within about 10% in every distance band out to 20 km.
 
-**Vs. expected** divides each pair's trips by that prediction and weights the graph by the residual,
-so the layout organises around what the model *cannot* explain. The pairs that surface are corridors:
-Washington Heights–Inwood connects to the Financial District, Chelsea and the Upper West Side far
-more than distance allows, which is the Hudson River Greenway; Williamsburg–Greenpoint to Astoria is
-the Pulaski Bridge. None of that is visible when volume drives the encoding.
+The model is fitted in the browser, by Newton-Raphson, over whichever period is selected and every
+pair in it — not just the edges passing the filter — so moving the filter changes what you see
+without moving the yardstick.
 
-The model is fitted in the browser over whichever period is selected, on every edge in that period —
-not just the ones passing the filter — so moving the filter changes what you see without moving the
-yardstick.
+### What it shows
 
-Three caveats, all of them visible in the interface:
+Over-connected pairs (orange edges, red on the map) are corridors. Washington Heights–Inwood rides to
+the Financial District at 11.6× expected, and to Chelsea, SoHo and Midtown at 4–5×: that is the
+Hudson River Greenway. Williamsburg–Greenpoint to Astoria runs at 2.1×, across the Pulaski Bridge.
 
-- **Thin pairs produce nonsense ratios.** A pair with nine trips posted 23× expected in testing. The
-  edge filter doubles as the noise floor; raise it before trusting anything.
-- **The filter biases the residuals upward.** Residuals average zero across all edges by
-  construction, but volume correlates with residual (r = +0.32), so the *visible* set averages about
-  1.35× at the default. The map keeps 1× as its neutral point rather than recentring, and the panel
-  reports the visible mean so you can read the lean.
+Under-connected pairs (blue) are mostly water. Harlem, East Harlem and Mott Haven to Astoria sit at
+0.1× — close as the crow flies, a long way by bike. Park Slope to the Financial District is 0.17×.
+
+With nothing selected, the map shows each district's **typical miss**: the trip-weighted average of
+how far its pairs sit from expected, as a factor. It is highest where straight-line distance is the
+poorest guide to where riders go — Washington Heights, Astoria, Long Island City, Mott Haven.
+
+### Caveats
+
+- **Thin pairs produce nonsense ratios.** A pair with a handful of trips can post 20× or 0.05×
+  and mean nothing. The edge filter doubles as the noise floor; raise it before trusting anything.
+- **The filter can tilt the visible set.** Across every pair, actual and expected totals match
+  exactly. But a long-distance pair only clears a volume cutoff if it is beating its prediction, so
+  the visible set can lean over 1× — 1.00× at the default filter, 1.05× at the 90th percentile. The
+  map keeps 1× as its neutral point, and the panel reports the visible ratio so you can read the lean.
+- **Centroid distance is not route distance.** Rivers and bridges are invisible to the model, which
+  is why so many of the strongest residuals are about water.
 - **Residuals are a property of the unordered pair**, so the departures/arrivals control does not
   apply to them; it keeps sizing nodes by trips.
+- **The geography is coarse for bike trips.** The median Citi Bike trip is about 1.6 km in a straight
+  line, and 34% of trips start and end in the same CDTA, so they never appear in the network.
 
 ---
 

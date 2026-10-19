@@ -173,17 +173,31 @@ window.addEventListener('resize', () => {
 
 // ── Gravity model ─────────────────────────────────────────────────────────────
 // Trips between two districts are overwhelmingly a function of how much cycling
-// each does and how far apart they are -- for 2025 that is ~90% of the variance,
-// with a distance exponent near -3.9. A force layout weighted by raw trips is
-// therefore mostly redrawing the map beside it. Fitting that expectation and
-// showing the residual leaves the part the map cannot tell you: which pairs ride
-// together far more than their size and separation predict.
+// each does and how far apart they are -- for 2025 that explains ~96% of the
+// deviance. A force layout weighted by raw trips is therefore mostly redrawing
+// the map beside it. Fitting that expectation and showing the residual leaves
+// the part the map cannot tell you: which pairs ride together far more, or far
+// less, than their size and separation predict.
 //
-// log(trips) ~ b0 + b1*log(mass_i * mass_j) + b2*log(km), by ordinary least
-// squares. Three parameters over at most 846 rows, so the normal equations are
-// solved directly rather than pulling in a regression library.
+// Poisson regression: log E[trips_ij] = a_i + a_j + f(km_ij). Each district gets
+// its own term, so a district's expected total always equals its actual total
+// and the residuals say only *who* it trades with, not how much. It is fitted on
+// every pair of active districts, zeros included. An earlier log-linear OLS fit
+// had to drop the zeros and fitted a geometric mean, so its expected trips summed
+// to six times the real total.
+//
+// f is piecewise linear in log(km), bending at DIST_KNOTS_KM. A single power
+// law cannot fit both ends: weighted toward the big short pairs it decays too
+// slowly at range, and vice versa. For 2025 the slope runs from ~0 under 2 km to
+// ~-5.8 beyond 16 km, which is what a bicycle would lead you to expect.
+//
+// ~48 parameters over at most 903 rows, solved by Newton-Raphson directly
+// rather than pulling in a regression library.
+const DIST_KNOTS_KM = [2, 4, 8, 16];
+const LOG_KNOTS     = DIST_KNOTS_KM.map(Math.log);
+
 let centroids  = {};    // CDTA2020 -> [lon, lat]
-let gravityFit = null;  // { r2, n } once fitted
+let gravityFit = null;  // { dev, n, slopes } once fitted
 
 function computeCentroids(geo) {
   geo.features.forEach(f => {
@@ -210,64 +224,138 @@ function centroidKm(idA, idB) {
                     (b[1] - a[1]) * 110.57);
 }
 
-// Gaussian elimination with partial pivoting on a 3x3 system.
-function solve3(M, v) {
-  const a = M.map((row, i) => row.concat(v[i]));
-  for (let c = 0; c < 3; c++) {
+// Gaussian elimination with partial pivoting.
+function solveN(M, v) {
+  const n = v.length;
+  const a = M.map((row, i) => [...row, v[i]]);
+  for (let c = 0; c < n; c++) {
     let p = c;
-    for (let r = c + 1; r < 3; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
+    for (let r = c + 1; r < n; r++) if (Math.abs(a[r][c]) > Math.abs(a[p][c])) p = r;
     if (Math.abs(a[p][c]) < 1e-12) return null;
     [a[c], a[p]] = [a[p], a[c]];
-    for (let r = 0; r < 3; r++) {
-      if (r === c) continue;
+    for (let r = 0; r < n; r++) {
+      if (r === c || !a[r][c]) continue;
       const k = a[r][c] / a[c][c];
-      for (let j = c; j < 4; j++) a[r][j] -= k * a[c][j];
+      for (let j = c; j <= n; j++) a[r][j] -= k * a[c][j];
     }
   }
-  return [a[0][3] / a[0][0], a[1][3] / a[1][1], a[2][3] / a[2][2]];
+  return a.map((row, i) => row[n] / row[i]);
 }
 
-// Fitted over every edge in the period, not just the ones on screen, so dragging
+// log(km) plus one hinge per knot: the slope changes at each knot, the curve
+// does not jump.
+function distanceBasis(km) {
+  const ld = Math.log(km);
+  return [ld, ...LOG_KNOTS.map(k => Math.max(0, ld - k))];
+}
+
+// Fitted over every pair in the period, not just the edges on screen, so dragging
 // the filter changes what you see without moving the yardstick you see it against.
 function computeGravity(links) {
-  const mass = new Float64Array(simNodes.length);
-  for (const l of links) { mass[l.s] += l.total; mass[l.t] += l.total; }
-
-  const rows = [];
+  const n = simNodes.length;
+  const mass   = new Float64Array(n);
+  const byPair = new Map();
   for (const l of links) {
-    l.resid = 0;
-    l.ratio = 1;
-    const km = centroidKm(simNodes[l.s].id, simNodes[l.t].id);
-    const mProd = mass[l.s] * mass[l.t];
-    if (km <= 0 || mProd <= 0 || l.total <= 0) continue;
-    rows.push([Math.log(mProd), Math.log(km), Math.log(l.total), l]);
+    mass[l.s] += l.total; mass[l.t] += l.total;
+    byPair.set(Math.min(l.s, l.t) * n + Math.max(l.s, l.t), l);
+    l.resid = 0; l.ratio = 1; l.expected = null;
   }
-  if (rows.length < 10) { gravityFit = null; return; }
 
-  const S = [[0, 0, 0], [0, 0, 0], [0, 0, 0]], T = [0, 0, 0];
-  let mean = 0;
-  for (const [lm, ld, lt] of rows) {
-    const x = [1, lm, ld];
-    for (let i = 0; i < 3; i++) {
-      for (let j = 0; j < 3; j++) S[i][j] += x[i] * x[j];
-      T[i] += x[i] * lt;
+  // Every pair of active districts, including those with no trips at all: a zero
+  // is an observation, and leaving zeros out flatters every pair that has trips.
+  const active = d3.range(n).filter(i => mass[i] > 0 && centroids[simNodes[i].id]);
+  const m = active.length, K = 1 + LOG_KNOTS.length, P = m + K;
+  const rows = [];
+  for (let a = 0; a < m; a++) {
+    for (let b = a + 1; b < m; b++) {
+      const i = active[a], j = active[b];
+      const km = centroidKm(simNodes[i].id, simNodes[j].id);
+      if (km <= 0) continue;
+      const l = byPair.get(i * n + j);
+      rows.push({ a, b, x: distanceBasis(km), y: l ? l.total : 0, l });
     }
-    mean += lt;
   }
-  mean /= rows.length;
+  if (rows.length < P + 10) { gravityFit = null; return; }
 
-  const b = solve3(S, T);
-  if (!b) { gravityFit = null; return; }
+  const eta = (t, r) => {
+    let e = t[r.a] + t[r.b];
+    for (let q = 0; q < K; q++) e += t[m + q] * r.x[q];
+    return e;
+  };
+  const logLik = t => {
+    let s = 0;
+    for (const r of rows) { const e = eta(t, r); s += r.y * e - Math.exp(e); }
+    return s;
+  };
 
-  let ssRes = 0, ssTot = 0;
-  for (const [lm, ld, lt, l] of rows) {
-    const pred = b[0] + b[1] * lm + b[2] * ld;
-    l.resid = lt - pred;
-    l.ratio = Math.exp(l.resid);
-    ssRes += (lt - pred) ** 2;
-    ssTot += (lt - mean) ** 2;
+  // Start from no distance decay, with each district's term set so its trips
+  // roughly balance; Newton then converges in about ten steps.
+  let theta = new Float64Array(P);
+  const half = 0.5 * Math.log(d3.sum(mass));
+  active.forEach((i, k) => { theta[k] = Math.log(mass[i]) - half; });
+  let ll = logLik(theta);
+
+  for (let iter = 0; iter < 50; iter++) {
+    const g = new Float64Array(P);
+    const H = Array.from({ length: P }, () => new Float64Array(P));
+    for (const r of rows) {
+      const mu = Math.exp(eta(theta, r)), res = r.y - mu;
+      const idx = [r.a, r.b], x = [1, 1];
+      for (let q = 0; q < K; q++) { idx.push(m + q); x.push(r.x[q]); }
+      for (let p = 0; p < idx.length; p++) {
+        g[idx[p]] += x[p] * res;
+        for (let q = 0; q < idx.length; q++) H[idx[p]][idx[q]] += mu * x[p] * x[q];
+      }
+    }
+    const step = solveN(H.map(row => Array.from(row)), Array.from(g));
+    if (!step) { gravityFit = null; return; }
+
+    // Halve the step until it improves the likelihood. Near the optimum rounding
+    // can stop any step from improving it, which is convergence too.
+    let s = 1, next = null;
+    for (; s > 1e-6; s /= 2) {
+      const cand = theta.map((v, k) => v + s * step[k]);
+      const llc = logLik(cand);
+      if (llc >= ll) { next = cand; ll = llc; break; }
+    }
+    if (!next) break;
+    theta = next;
+    if (d3.max(step, Math.abs) * s < 1e-9) break;
   }
-  gravityFit = { r2: ssTot ? 1 - ssRes / ssTot : 0, n: rows.length };
+
+  // Deviance explained: the Poisson analogue of R², against a model that
+  // predicts the same count for every pair.
+  let dev = 0, dev0 = 0;
+  const ybar = d3.mean(rows, r => r.y);
+  for (const r of rows) {
+    const mu = Math.exp(eta(theta, r));
+    dev  += 2 * ((r.y ? r.y * Math.log(r.y / mu)   : 0) - (r.y - mu));
+    dev0 += 2 * ((r.y ? r.y * Math.log(r.y / ybar) : 0) - (r.y - ybar));
+    if (r.l) {
+      r.l.expected = mu;
+      r.l.ratio    = r.y / mu;
+      r.l.resid    = Math.log(r.l.ratio);
+    }
+  }
+  // The distance-decay slope within each segment, between successive knots.
+  const slopes = d3.range(K).map(q => d3.sum(theta.subarray(m, m + q + 1)));
+  gravityFit = { dev: dev0 ? 1 - dev / dev0 : 0, n: rows.length, slopes };
+}
+
+// How far off the model typically is for a district's trips: the trip-weighted
+// mean |log(actual / expected)| over the edges on show, as a factor. With every
+// district's total pinned to its actual, "does this place beat its geography
+// overall" no longer has an answer; this is the overview question that does.
+function missByNode() {
+  const n = simNodes.length;
+  const w = new Float64Array(n), s = new Float64Array(n);
+  for (const l of rawWeighted) {
+    if (l.total < state.threshold || l.expected === null) continue;
+    const a = l.total * Math.abs(l.resid);
+    s[l.s] += a; w[l.s] += l.total;
+    s[l.t] += a; w[l.t] += l.total;
+  }
+  return Array.from(w, (wi, i) => wi ? Math.exp(s[i] / wi) : null);
 }
 
 const useResidual = () => state.edgeMetric === 'residual';
@@ -682,12 +770,8 @@ function showTooltip(event, d) {
   }
   let extra = '';
   if (useResidual()) {
-    let s = 0, n = 0;
-    for (const l of rawWeighted) {
-      if (l.total < state.threshold) continue;
-      if (l.s === d.index || l.t === d.index) { s += l.resid || 0; n++; }
-    }
-    if (n) extra = `<br>Mean vs. expected: ${Math.exp(s / n).toFixed(2)}×`;
+    const miss = missByNode()[d.index];
+    if (miss !== null) extra = `<br>Typical miss vs. expected: ${miss.toFixed(2)}×`;
   }
 
   tooltip.style('display', 'block').html(
@@ -707,21 +791,21 @@ function hideTooltip() { tooltip.style('display', 'none'); }
 function updateStats(edges, nodes) {
   document.getElementById('stat-edges').textContent = edges.toLocaleString();
   document.getElementById('stat-nodes').textContent = nodes;
-  document.getElementById('stat-r2').textContent =
-    gravityFit ? gravityFit.r2.toFixed(3) : '\u2014';
+  document.getElementById('stat-fit').textContent =
+    gravityFit ? gravityFit.dev.toFixed(3) : '\u2014';
 
-  // Residuals average zero over every edge -- that is what least squares does --
-  // but the filter keeps edges by trip volume, and volume correlates with the
-  // residual (r = +0.32 for 2025). So the visible set is not centred on 1x, and
-  // at the p50 default it sits near 1.35x. Recentring the ramp would bury that;
-  // reporting it lets you read the map knowing which way it leans.
-  let s = 0, n = 0;
+  // Over every pair, actual and expected totals match exactly -- the district
+  // terms guarantee it. But the filter keeps edges by trip volume, and a pair
+  // only clears a volume cutoff at long range if it is beating its prediction,
+  // so the visible set can lean over 1x. Recentring the ramp would bury that;
+  // reporting the ratio of totals lets you read the map knowing which way it leans.
+  let y = 0, mu = 0;
   for (const l of rawWeighted) {
-    if (l.total < state.threshold) continue;
-    s += l.resid || 0; n++;
+    if (l.total < state.threshold || l.expected === null) continue;
+    y += l.total; mu += l.expected;
   }
   document.getElementById('stat-bias').textContent =
-    n ? Math.exp(s / n).toFixed(2) + '\u00d7' : '\u2014';
+    mu ? (y / mu).toFixed(2) + '\u00d7' : '\u2014';
 }
 
 // ── Controls ──────────────────────────────────────────────────────────────────
@@ -879,11 +963,20 @@ function positionLegend() {
 function updateLegend(maxVal, selectedIndex) {
   const who = selectedIndex === null ? null : simNodes[selectedIndex].id;
 
+  if (useResidual() && who === null) {
+    // maxVal is the largest typical miss on show; the ramp starts at a perfect fit.
+    mapSvg.select('.legend-title').text('Typical miss vs. expected');
+    mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-grad)');
+    mapSvg.select('.legend-min').text('1×');
+    mapSvg.select('.legend-max').text(`${maxVal.toFixed(2)}×`);
+    mapSvg.select('.legend-mid').attr('opacity', 0);
+    return;
+  }
+
   if (useResidual()) {
     // maxVal is the largest absolute log-residual on show. The ramp is symmetric
     // about it, so twice expected and half expected sit equally far from neutral.
-    mapSvg.select('.legend-title')
-      .text(who === null ? 'Mean vs. expected' : `Vs. expected — ${who}`);
+    mapSvg.select('.legend-title').text(`Vs. expected — ${who}`);
     mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-div)');
     mapSvg.select('.legend-min').text(`${Math.exp(-maxVal).toFixed(2)}×`);
     mapSvg.select('.legend-max').text(`${Math.exp(maxVal).toFixed(1)}×`);
@@ -911,36 +1004,34 @@ function updateChoropleth(selectedIndex) {
   const valueMap = {};
 
   if (useResidual()) {
-    // With a district picked: how each partner compares to its own prediction.
-    // With nothing picked: each district's mean log-residual over the edges on
-    // show, which reads as "does this place beat its geography overall".
+    // With a district picked: how each partner compares to its own prediction,
+    // on the diverging ramp. With nothing picked: each district's typical miss
+    // (see missByNode), which is high where distance is a poor guide to where
+    // its riders go.
+    let fill;
     if (selectedIndex === null) {
-      const sum = new Float64Array(simNodes.length);
-      const cnt = new Float64Array(simNodes.length);
-      for (const l of rawWeighted) {
-        if (l.total < state.threshold) continue;
-        sum[l.s] += l.resid || 0; cnt[l.s]++;
-        sum[l.t] += l.resid || 0; cnt[l.t]++;
-      }
-      simNodes.forEach(n => {
-        if (cnt[n.index]) valueMap[n.id] = sum[n.index] / cnt[n.index];
-      });
+      const miss = missByNode();
+      simNodes.forEach(n => { if (miss[n.index] !== null) valueMap[n.id] = miss[n.index]; });
+      const hi = d3.max(Object.values(valueMap)) || 1;
+      choroplethScale.domain([1, hi]);
+      updateLegend(hi, null);
+      fill = v => choroplethScale(v);
     } else {
       for (const l of rawWeighted) {
         if (l.total < state.threshold) continue;
         if (l.s === selectedIndex)      valueMap[simNodes[l.t].id] = l.resid || 0;
         else if (l.t === selectedIndex) valueMap[simNodes[l.s].id] = l.resid || 0;
       }
+      const m = d3.max(Object.values(valueMap), Math.abs) || 1;
+      updateLegend(m, selectedIndex);
+      fill = v => residColor(0.5 + 0.5 * v / m);
     }
-
-    const m = d3.max(Object.values(valueMap), Math.abs) || 1;
-    updateLegend(m, selectedIndex);
 
     mapG.selectAll('path')
       .attr('fill', f => {
         const id = f.properties.CDTA2020;
         if (id === selectedId) return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
-        if (id in valueMap) return residColor(0.5 + 0.5 * valueMap[id] / m);
+        if (id in valueMap) return fill(valueMap[id]);
         return geoIdToIndex[id] === undefined ? NO_STATIONS_COLOR : NO_TRIPS_COLOR;
       })
       .attr('stroke', f => f.properties.CDTA2020 === selectedId ? '#fff' : '#444')
