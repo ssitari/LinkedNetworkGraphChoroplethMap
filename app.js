@@ -459,6 +459,7 @@ function applyThresholdAndDraw(data) {
         updateChoropleth(d.index);
         highlight(d);
       }
+      showTooltip(event, d);  // the open tooltip's content depends on the selection
     });
 
   nodeEnter.append('circle')
@@ -759,28 +760,67 @@ function drag() {
 }
 
 // ── Tooltip ───────────────────────────────────────────────────────────────────
+// The tooltip answers the question the screen is asking. With a district
+// selected, hovering any other one shows only the trips between the two --
+// its totals with everyone would contradict the map, which is colored by the
+// pair. Otherwise it shows the district's totals over the edges on show, and
+// says so, since with the filter on that is not "everywhere".
 function showTooltip(event, d) {
+  const header = `<strong>${d.id}</strong><br>${d.short_name}<br>${d.borough}<br>`;
+  const html = selectedNode && selectedNode.index !== d.index
+    ? header + pairTooltip(selectedNode, d)
+    : header + totalsTooltip(d);
+  tooltip.style('display', 'block').html(html);
+  moveTooltip(event);
+}
+
+function totalsTooltip(d) {
   // Reads rawWeighted, already reduced to the selected period, and applies the
   // same threshold as the draw -- so these totals match what is on screen.
-  let out = 0, inn = 0;
+  let out = 0, inn = 0, n = 0;
   for (const l of rawWeighted) {
     if (l.total < state.threshold) continue;
-    if      (l.s === d.index) { out += l.ab; inn += l.ba; }
-    else if (l.t === d.index) { out += l.ba; inn += l.ab; }
+    if      (l.s === d.index) { out += l.ab; inn += l.ba; n++; }
+    else if (l.t === d.index) { out += l.ba; inn += l.ab; n++; }
   }
-  let extra = '';
-  if (useResidual()) {
-    const miss = missByNode()[d.index];
-    if (miss !== null) extra = `<br>Typical miss vs. expected: ${miss.toFixed(2)}×`;
-  }
-
-  tooltip.style('display', 'block').html(
-    `<strong>${d.id}</strong><br>${d.short_name}<br>${d.borough}<br>` +
+  const scope = selectedNode ? 'highlighted' : 'connected';
+  let html =
+    `<span class="tt-sub">Trips with the ${n} ${scope} district${n === 1 ? '' : 's'}</span><br>` +
     `Departures: ${out.toLocaleString()}<br>` +
     `Arrivals: &nbsp;${inn.toLocaleString()}<br>` +
-    `Total: &nbsp;&nbsp;&nbsp;&nbsp;${(out + inn).toLocaleString()}` + extra
-  );
-  moveTooltip(event);
+    `Total: &nbsp;&nbsp;&nbsp;&nbsp;${(out + inn).toLocaleString()}`;
+  if (useResidual()) {
+    const miss = missByNode()[d.index];
+    if (miss !== null) html += `<br>Typical miss vs. expected: ${miss.toFixed(2)}×`;
+  }
+  return html;
+}
+
+// Directions are named from the selected district, matching the map legend
+// ("Departures — MN12" colors each partner by trips from MN12).
+function pairTooltip(sel, d) {
+  let html = `<span class="tt-sub">Trips with ${sel.short_name} (${sel.id})</span><br>`;
+  const l = rawWeighted.find(l =>
+    (l.s === sel.index && l.t === d.index) || (l.s === d.index && l.t === sel.index));
+  if (!l) {
+    const when = state.month ? `${MONTHS[state.month]} 2025` : '2025';
+    return html + `None in ${when}`;
+  }
+  const fromSel = l.s === sel.index ? l.ab : l.ba;
+  const toSel   = l.s === sel.index ? l.ba : l.ab;
+  html +=
+    `From ${sel.id}: ${fromSel.toLocaleString()}<br>` +
+    `To ${sel.id}: &nbsp;&nbsp;&nbsp;${toSel.toLocaleString()}<br>` +
+    `Total: &nbsp;&nbsp;&nbsp;&nbsp;${l.total.toLocaleString()}`;
+  if (useResidual() && l.expected !== null) {
+    html += `<br>Expected: ${Math.round(l.expected).toLocaleString()} ` +
+            `(${l.ratio.toFixed(2)}×)`;
+  }
+  if (l.total < state.threshold) {
+    html += `<br><span class="tt-sub">Below the edge filter ` +
+            `(≥${state.threshold.toLocaleString()}), so not drawn</span>`;
+  }
+  return html;
 }
 function moveTooltip(event) {
   tooltip.style('left', (event.pageX + 14) + 'px').style('top', (event.pageY - 32) + 'px');
@@ -897,6 +937,7 @@ function initMap(geo, data) {
         updateChoropleth(nodeIdx);
         highlight(node);
       }
+      showTooltip(event, node);  // the open tooltip's content depends on the selection
     });
 
   buildMapLegend();
