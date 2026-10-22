@@ -59,6 +59,8 @@
       color: #7d7d7d;
     }
     .note em { color: #9a9a9a; font-style: normal; font-weight: 600; }
+    .note a { color: #b8b8b8; text-decoration: underline; text-underline-offset: 2px; }
+    .note a:hover { color: #eee; }
 
     .control-group { display: flex; flex-direction: column; gap: 6px; }
     .control-group label {
@@ -220,20 +222,20 @@
       <label><input type="radio" name="edge" value="trips" checked> Trips</label>
       <label><input type="radio" name="edge" value="residual"> Vs. expected</label>
     </div>
-    <p class="note">District size and distance predict ~96% of the trip pattern.
+    <p class="note">District size and distance predict
+    <a href="https://github.com/ssitari/LinkedNetworkGraphChoroplethMap#edge-weight-trips-vs-vs-expected"
+       target="_blank" rel="noopener">~96% of the trip pattern</a>.
     <em>Vs. expected</em> divides by that prediction.</p>
   </div>
 
   <hr>
 
   <div class="control-group">
-    <label>Min edge trips</label>
+    <label>Min. trips per edge</label>
     <div class="slider-row">
       <input type="range" id="threshold-slider" min="0" max="99" step="1" value="50">
       <span id="threshold-val">—</span>
     </div>
-    <p class="note">Also a noise floor: nine trips can post a 20× ratio
-    and mean nothing.</p>
   </div>
 
   <div id="stats">
