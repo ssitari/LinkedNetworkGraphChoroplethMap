@@ -27,9 +27,17 @@ const NO_TRIPS_COLOR    = '#333333';
 // least interesting edges the brightest things on a dark ground.
 const EDGE_OVER  = '#f0a04b';
 const EDGE_UNDER = '#5b8fc9';
-// The map can take a true diverging ramp -- its neutral midpoint reads as "as
-// expected", which is a real category there. Reversed so over-connected is warm.
-const residColor = t => d3.interpolateRdBu(1 - t);
+
+// Classed fills, shared by the map and the network's node fills under a
+// selection. Counts and typical miss are sequential: Brewer YlGnBu, five
+// quantile classes over the values in view, so every class is used whatever
+// the period or filter. Vs. expected is diverging about 1x, so it takes Brewer
+// RdBu with fixed breaks symmetric in log space (0.5 and 2 sit equally far
+// from 1); the middle class reads "about as expected". Reversed so
+// over-connected is warm, like the edges.
+const SEQ_COLORS   = d3.schemeYlGnBu[5];
+const DIV_COLORS   = [...d3.schemeRdBu[5]].reverse();
+const RATIO_BREAKS = [0.5, 0.8, 1.25, 2];
 
 // Node opacity. Applied on the g.node group only -- never also on its children,
 // or the two multiply and inactive nodes all but vanish.
@@ -65,7 +73,7 @@ const labelLayer = g.append('g').attr('class', 'labels').attr('pointer-events', 
 const mapContainer = document.getElementById('map-container');
 const mapSvg       = d3.select('#map');
 const mapG         = mapSvg.append('g');
-const choroplethScale = d3.scaleSequential(d3.interpolateYlGnBu);
+let   viewClasses  = null;  // the classes on the map now -- highlight() colors nodes by them
 
 // Falls back to nominal dimensions: below the 760px breakpoint the panels are
 // display:none and measure 0, which would centre the simulation on the origin.
@@ -676,32 +684,29 @@ function highlight(node) {
   neighborSet.add(node.index);  // keep the selection lit even with every edge filtered out
   labelNeighbors = neighborSet;
 
-  // Residual is a property of the unordered pair, so the departures/arrivals
-  // split does not apply to it -- that control keeps sizing nodes by trips.
-  const weightMap = {}, residMap = {};
+  // The same value the map shows for each partner, so a node and its district
+  // fall in the same class. Residual is a property of the unordered pair, so the
+  // departures/arrivals split does not apply to it -- that control keeps sizing
+  // nodes by trips.
+  const valueMap = {};
   for (const l of adjLinks) {
     const isSource = l.source.index === node.index;
     const otherIdx = isSource ? l.target.index : l.source.index;
-    const val = state.mode === 'total' ? l.total
+    valueMap[otherIdx] = useResidual() ? l.ratio
+      : state.mode === 'total' ? l.total
       : state.mode === 'from' ? (isSource ? l.ab : l.ba)
       : (isSource ? l.ba : l.ab);
-    weightMap[otherIdx] = val;
-    residMap[otherIdx]  = l.resid || 0;
   }
-  const maxAdjResid = d3.max(Object.values(residMap), Math.abs) || 1;
 
   nodeLayer.selectAll('g.node')
     .attr('opacity', d => neighborSet.has(d.index) ? 1 : FADED_OPACITY);
 
   nodeLayer.selectAll('g.node circle')
     .attr('fill', d => {
-      if (d.index === node.index) return BOROUGH_COLOR[d.borough] || DEFAULT_COLOR;
-      if (useResidual()) {
-        if (!(d.index in residMap)) return BOROUGH_COLOR[d.borough] || DEFAULT_COLOR;
-        return residColor(0.5 + 0.5 * residMap[d.index] / maxAdjResid);
-      }
-      const w = weightMap[d.index];
-      return w ? choroplethScale(w) : (BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
+      const v = valueMap[d.index];
+      return d.index !== node.index && v && viewClasses
+        ? viewClasses.color(v)
+        : (BOROUGH_COLOR[d.borough] || DEFAULT_COLOR);
     })
     .attr('stroke',       d => d.index === node.index ? '#fff' : 'rgba(0,0,0,0.4)')
     .attr('stroke-width', d => d.index === node.index ? 3 : 0.8);
@@ -939,175 +944,171 @@ function initMap(geo, data) {
       showTooltip(event, node);  // the open tooltip's content depends on the selection
     });
 
-  buildMapLegend();
-
   onMapResize = () => {
     const nr = mapContainer.getBoundingClientRect();
     if (!nr.width || !nr.height) return;
     projection.fitSize([nr.width, nr.height], geo);
     mapG.selectAll('path').attr('d', path);
-    positionLegend();
   };
 }
 
-function buildMapLegend() {
-  const defs = mapSvg.append('defs');
-  const ramp = (id, interp) => {
-    const grad = defs.append('linearGradient').attr('id', id);
-    d3.range(0, 1.01, 0.05).forEach(t => {
-      grad.append('stop')
-        .attr('offset', `${(t * 100).toFixed(0)}%`)
-        .attr('stop-color', interp(t));
-    });
-  };
-  ramp('clegend-grad', d3.interpolateYlGnBu);
-  ramp('clegend-div', residColor);
+// ── Classes ───────────────────────────────────────────────────────────────────
+const fmtCount = v => Math.round(v).toLocaleString();
+const fmtRatio = v => (v >= 10 ? v.toFixed(1) : v.toFixed(2)) + '\u00d7';
 
-  const lg = mapSvg.append('g').attr('class', 'map-legend').attr('pointer-events', 'none');
-
-  lg.append('text').attr('class', 'legend-title')
-    .attr('y', -5).attr('fill', '#bbb').attr('font-size', '10px')
-    .attr('font-weight', '600').attr('font-family', 'system-ui, sans-serif');
-
-  lg.append('rect').attr('class', 'legend-bar')
-    .attr('y', 0).attr('height', 8).attr('fill', 'url(#clegend-grad)');
-
-  lg.append('text').attr('class', 'legend-min')
-    .attr('y', 18).attr('fill', '#888').attr('font-size', '9px')
-    .attr('font-family', 'system-ui, sans-serif').text('0');
-
-  lg.append('text').attr('class', 'legend-max')
-    .attr('y', 18).attr('text-anchor', 'end')
-    .attr('fill', '#888').attr('font-size', '9px')
-    .attr('font-family', 'system-ui, sans-serif');
-
-  // Only meaningful on the diverging ramp, where the midpoint is a real category
-  // -- "as expected" -- rather than just half of something.
-  lg.append('text').attr('class', 'legend-mid')
-    .attr('y', 18).attr('text-anchor', 'middle')
-    .attr('fill', '#888').attr('font-size', '9px')
-    .attr('font-family', 'system-ui, sans-serif').text('1×');
-
-  positionLegend();
+// Bins the values in view by the class each falls in, so every label gives the
+// range actually on screen rather than the class's theoretical bounds.
+function classRows(values, scale, colors, fmt, keepEmpty) {
+  return colors.map(color => {
+    const inClass = values.filter(v => scale(v) === color);
+    if (!inClass.length) return keepEmpty ? { color, label: 'none in view' } : null;
+    const [lo, hi] = d3.extent(inClass);
+    return { color, label: fmt(lo) === fmt(hi) ? fmt(lo) : `${fmt(lo)} \u2013 ${fmt(hi)}` };
+  }).filter(Boolean);
 }
 
-function positionLegend() {
-  const r = mapContainer.getBoundingClientRect();
-  const LW = Math.min(180, r.width - 24);
-  mapSvg.select('.map-legend').attr('transform', `translate(12, ${r.height - 28})`);
-  mapSvg.select('.legend-bar').attr('width', LW);
-  mapSvg.select('.legend-max').attr('x', LW);
-  mapSvg.select('.legend-mid').attr('x', LW / 2);
+// With nothing in view -- a district whose edges the filter has hidden -- the
+// legend says so once instead of listing five empty classes.
+const NO_CLASSES = { color: () => null, rows: [], note: 'No trips at this filter' };
+
+// Empty classes are dropped: with fewer than five distinct values in view,
+// quantiles repeat, and a row labelled "none" would only be noise.
+function quantileClasses(values, fmt) {
+  if (!values.length) return NO_CLASSES;
+  const scale = d3.scaleQuantile().domain(values).range(SEQ_COLORS);
+  return { color: scale, rows: classRows(values, scale, SEQ_COLORS, fmt, false),
+           note: 'Quantile classes' };
 }
 
-function updateLegend(maxVal, selectedIndex) {
-  const who = selectedIndex === null ? null : simNodes[selectedIndex].id;
+// Empty classes are kept: the breaks are fixed, and an empty "about as
+// expected" class is itself worth seeing.
+function ratioClasses(values) {
+  if (!values.length) return NO_CLASSES;
+  const scale = d3.scaleThreshold().domain(RATIO_BREAKS).range(DIV_COLORS);
+  return { color: scale, rows: classRows(values, scale, DIV_COLORS, fmtRatio, true),
+           note: 'Breaks at 0.5, 0.8, 1.25 and 2\u00d7' };
+}
 
-  if (useResidual() && who === null) {
-    // maxVal is the largest typical miss on show; the ramp starts at a perfect fit.
-    mapSvg.select('.legend-title').text('Typical miss vs. expected');
-    mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-grad)');
-    mapSvg.select('.legend-min').text('1×');
-    mapSvg.select('.legend-max').text(`${maxVal.toFixed(2)}×`);
-    mapSvg.select('.legend-mid').attr('opacity', 0);
-    return;
+// ── Legends ───────────────────────────────────────────────────────────────────
+// One per panel, rebuilt with the map on every change of selection, period,
+// filter or metric, so each always describes what is on screen.
+const mapLegend = d3.select('#map-container').append('div').attr('class', 'panel-legend');
+const netLegend = d3.select('#chart-container').append('div').attr('class', 'panel-legend');
+
+// sections: [{ title?, note?, rows: [{ color, label, shape, outline? }] }]
+function renderLegend(el, sections) {
+  el.html('');
+  for (const s of sections) {
+    const sec = el.append('div').attr('class', 'lg-section');
+    if (s.title) sec.append('div').attr('class', 'lg-title').text(s.title);
+    if (s.note)  sec.append('div').attr('class', 'lg-note').text(s.note);
+    for (const r of s.rows) {
+      const row = sec.append('div').attr('class', 'lg-row');
+      row.append('span').attr('class', `lg-sw ${r.shape}`)
+        .style('background', r.color)
+        .style('border-color', r.outline || null);
+      row.append('span').text(r.label);
+    }
   }
+}
 
+function legendTitle(sel) {
   if (useResidual()) {
-    // maxVal is the largest absolute log-residual on show. The ramp is symmetric
-    // about it, so twice expected and half expected sit equally far from neutral.
-    mapSvg.select('.legend-title').text(`Vs. expected — ${who}`);
-    mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-div)');
-    mapSvg.select('.legend-min').text(`${Math.exp(-maxVal).toFixed(2)}×`);
-    mapSvg.select('.legend-max').text(`${Math.exp(maxVal).toFixed(1)}×`);
-    mapSvg.select('.legend-mid').attr('opacity', 1);
-    return;
+    return sel ? `Vs. expected: trips with ${sel.short_name}` : 'Typical miss vs. expected';
   }
-
-  const metric = state.mode === 'from' ? 'Departures'
-    : state.mode === 'to' ? 'Arrivals'
-    :                       'Total trips';
-  mapSvg.select('.legend-title')
-    .text(who === null ? metric
-      : `${state.mode === 'total' ? 'Trips' : metric} — ${who}`);
-  mapSvg.select('.legend-bar').attr('fill', 'url(#clegend-grad)');
-  mapSvg.select('.legend-min').text('0');
-  mapSvg.select('.legend-max').text(maxVal.toLocaleString());
-  mapSvg.select('.legend-mid').attr('opacity', 0);
+  if (sel) {
+    const verb = state.mode === 'from' ? 'from' : state.mode === 'to' ? 'to' : 'with';
+    return `Trips ${verb} ${sel.short_name}`;
+  }
+  return state.mode === 'from' ? 'Departures per district'
+    :    state.mode === 'to'   ? 'Arrivals per district'
+    :                            'Trips per district';
 }
 
+function updateLegends(sel, valueMap) {
+  const title = legendTitle(sel);
+  const shaped = (rows, shape) => rows.map(r => ({ ...r, shape }));
+  const selectedRow = sel && {
+    label: `${sel.short_name} (selected)`,
+    color: BOROUGH_COLOR[sel.borough] || DEFAULT_COLOR,
+    outline: '#fff',
+  };
+
+  // Map: the classes, then the selection and the two greys that are not data.
+  // "No trips shown" only appears when some served district is actually grey.
+  const unshown = simNodes.some(n => n.id !== selectedId && !(n.id in valueMap));
+  renderLegend(mapLegend, [
+    { title, note: viewClasses.note, rows: shaped(viewClasses.rows, 'square') },
+    { rows: shaped([
+        ...(selectedRow ? [selectedRow] : []),
+        ...(unshown ? [{ label: 'No trips shown', color: NO_TRIPS_COLOR }] : []),
+        { label: 'No Citi Bike stations', color: NO_STATIONS_COLOR },
+      ], 'square') },
+  ]);
+
+  // Network: under a selection the partner nodes take the map's classes;
+  // otherwise nodes are colored by borough. In vs. expected mode the edges
+  // carry their own warm/cool key.
+  const present = new Set(simNodes.map(n => n.borough));
+  const sections = [sel
+    ? { title, note: viewClasses.note,
+        rows: shaped([...viewClasses.rows, selectedRow], 'circle') }
+    : { title: 'Borough',
+        rows: shaped(Object.entries(BOROUGH_COLOR)
+          .filter(([b]) => present.has(b))
+          .map(([label, color]) => ({ label, color })), 'circle') }];
+  if (useResidual()) {
+    sections.push({ title: 'Edges', note: 'Thicker = further from expected', rows: shaped([
+      { label: 'More trips than expected', color: EDGE_OVER },
+      { label: 'Fewer trips than expected', color: EDGE_UNDER },
+    ], 'line') });
+  }
+  renderLegend(netLegend, sections);
+}
+
+// ── Choropleth ────────────────────────────────────────────────────────────────
 function updateChoropleth(selectedIndex) {
   if (!mapG.selectAll('path').size()) return;
 
   selectedId = selectedIndex === null ? null : simNodes[selectedIndex].id;
+  const sel  = selectedIndex === null ? null : simNodes[selectedIndex];
 
+  // One value per district. With a district picked: each partner's trips with
+  // it, or their ratio to expected. With none: each district's own total, or
+  // its typical miss (see missByNode), which is high where distance is a poor
+  // guide to where its riders go. Zeros are left out and drawn grey.
   const valueMap = {};
-
-  if (useResidual()) {
-    // With a district picked: how each partner compares to its own prediction,
-    // on the diverging ramp. With nothing picked: each district's typical miss
-    // (see missByNode), which is high where distance is a poor guide to where
-    // its riders go.
-    let fill;
-    if (selectedIndex === null) {
-      const miss = missByNode();
-      simNodes.forEach(n => { if (miss[n.index] !== null) valueMap[n.id] = miss[n.index]; });
-      const hi = d3.max(Object.values(valueMap)) || 1;
-      choroplethScale.domain([1, hi]);
-      updateLegend(hi, null);
-      fill = v => choroplethScale(v);
-    } else {
-      for (const l of rawWeighted) {
-        if (l.total < state.threshold) continue;
-        if (l.s === selectedIndex)      valueMap[simNodes[l.t].id] = l.resid || 0;
-        else if (l.t === selectedIndex) valueMap[simNodes[l.s].id] = l.resid || 0;
-      }
-      const m = d3.max(Object.values(valueMap), Math.abs) || 1;
-      updateLegend(m, selectedIndex);
-      fill = v => residColor(0.5 + 0.5 * v / m);
-    }
-
-    mapG.selectAll('path')
-      .attr('fill', f => {
-        const id = f.properties.CDTA2020;
-        if (id === selectedId) return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
-        if (id in valueMap) return fill(valueMap[id]);
-        return geoIdToIndex[id] === undefined ? NO_STATIONS_COLOR : NO_TRIPS_COLOR;
-      })
-      .attr('stroke', f => f.properties.CDTA2020 === selectedId ? '#fff' : '#444')
-      .attr('stroke-width', pathStrokeWidth);
-    return;
-  }
-
-  if (selectedIndex === null) {
-    simNodes.forEach(n => { valueMap[n.id] = lastMetrics ? lastMetrics[n.index] : 0; });
+  if (!sel) {
+    const own = useResidual() ? missByNode() : Array.from(lastMetrics || []);
+    simNodes.forEach(n => { if (own[n.index]) valueMap[n.id] = own[n.index]; });
   } else {
     for (const l of rawWeighted) {
       if (l.total < state.threshold) continue;
-      if (l.s === selectedIndex) {
-        const val = state.mode === 'from' ? l.ab : state.mode === 'to' ? l.ba : l.total;
-        valueMap[simNodes[l.t].id] = val;
-      } else if (l.t === selectedIndex) {
-        const val = state.mode === 'from' ? l.ba : state.mode === 'to' ? l.ab : l.total;
-        valueMap[simNodes[l.s].id] = val;
-      }
+      const fromSel = l.s === selectedIndex;
+      if (!fromSel && l.t !== selectedIndex) continue;
+      const v = useResidual()            ? l.ratio
+        :       state.mode === 'from'    ? (fromSel ? l.ab : l.ba)
+        :       state.mode === 'to'      ? (fromSel ? l.ba : l.ab)
+        :                                  l.total;
+      if (v) valueMap[simNodes[fromSel ? l.t : l.s].id] = v;
     }
   }
 
-  const maxVal = d3.max(Object.values(valueMap)) || 1;
-  choroplethScale.domain([0, maxVal]);
-  updateLegend(maxVal, selectedIndex);
+  const values = Object.values(valueMap);
+  viewClasses = useResidual() && sel ? ratioClasses(values)
+    : quantileClasses(values, useResidual() ? fmtRatio : fmtCount);
 
   mapG.selectAll('path')
     .attr('fill', f => {
       const id = f.properties.CDTA2020;
       if (id === selectedId) return BOROUGH_COLOR[f.properties.BoroName] || DEFAULT_COLOR;
-      const val = valueMap[id];
-      if (val) return choroplethScale(val);
+      if (id in valueMap) return viewClasses.color(valueMap[id]);
       return geoIdToIndex[id] === undefined ? NO_STATIONS_COLOR : NO_TRIPS_COLOR;
     })
     .attr('stroke', f => f.properties.CDTA2020 === selectedId ? '#fff' : '#444')
     .attr('stroke-width', pathStrokeWidth);
+
+  updateLegends(sel, valueMap);
 }
 
 function showMapTooltip(event, f) {

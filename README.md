@@ -35,7 +35,11 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
 
 - **Force-directed network** — one node per CDTA, edges weighted by trip volume between them
 - **Linked choropleth** — the map re-colors on interaction to show trip volumes relative to the
-  selected node, using a sequential YlGnBu scale
+  selected node. Counts use five quantile classes (ColorBrewer YlGnBu); vs. expected uses
+  ColorBrewer RdBu with fixed breaks at 0.5, 0.8, 1.25 and 2×. Partner nodes in the network take
+  the same classes as their districts
+- **Legends in both panels** — rebuilt on every change, with each class labelled by the range of
+  values actually in view
 - **Month selector** — steps through the twelve months of 2025
 - **Node sizing** — by total trips, departures only, or arrivals only
 - **Edge filter** — a percentile slider that hides the weakest edges. It resolves to a trip

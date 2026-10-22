@@ -143,6 +143,34 @@
     #tooltip strong { font-size: 13px; }
     #tooltip .tt-sub { color: #aaa; font-size: 11px; }
 
+    /* ── Panel legends ── */
+    .panel-legend {
+      position: absolute;
+      left: 12px;
+      bottom: 12px;
+      max-width: 230px;
+      padding: 8px 10px;
+      background: rgba(20, 20, 20, .88);
+      border: 1px solid #2e2e2e;
+      border-radius: 5px;
+      font: 11px/1.45 system-ui, sans-serif;
+      color: #bbb;
+      pointer-events: none;
+    }
+    .lg-section + .lg-section { margin-top: 7px; }
+    .lg-title { font-weight: 600; color: #e0e0e0; }
+    .lg-note  { font-size: 10px; color: #8a8a8a; margin-bottom: 3px; }
+    .lg-row   { display: flex; align-items: center; gap: 7px; }
+    .lg-sw {
+      flex-shrink: 0;
+      width: 12px;
+      height: 12px;
+      border: 1px solid #555;
+    }
+    .lg-sw.square { border-radius: 2px; }
+    .lg-sw.circle { border-radius: 50%; }
+    .lg-sw.line   { width: 16px; height: 3px; border: none; border-radius: 2px; }
+
     /* ── Loading overlay ── */
     #loading {
       position: absolute;
