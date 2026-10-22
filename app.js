@@ -140,7 +140,6 @@ Promise.all([
     .alphaDecay(0.02)
     .on('tick', ticked);
 
-  buildLegend(data);
   initControls(data);
   initMap(geo, data);
   render(data);
@@ -1122,31 +1121,4 @@ function showMapTooltip(event, f) {
     );
     moveTooltip(event);
   }
-}
-
-// ── Legend ────────────────────────────────────────────────────────────────────
-function swatchRow(cont, color, label, isArea) {
-  const row = cont.append('div').attr('class', 'legend-item');
-  const sw = row.append('div')
-    .attr('class', isArea ? 'swatch area' : 'swatch')
-    .style('background', color);
-  if (isArea) sw.style('border', '1px solid #555');
-  row.append('span').text(label);
-}
-
-function buildLegend(data) {
-  // Driven by the data, not by BOROUGH_COLOR: Citi Bike does not serve Staten
-  // Island, so a hard-coded list advertises a swatch that never appears.
-  const present = new Set(data.nodes.map(n => n.borough));
-  const col = sel => d3.select(sel)
-    .style('display', 'flex').style('flex-direction', 'column').style('gap', '5px');
-
-  const nodeKey = col('#legend');
-  Object.entries(BOROUGH_COLOR)
-    .filter(([name]) => present.has(name))
-    .forEach(([name, color]) => swatchRow(nodeKey, color, name, false));
-
-  const mapKey = col('#map-key');
-  swatchRow(mapKey, NO_TRIPS_COLOR,    'No trips at this filter', true);
-  swatchRow(mapKey, NO_STATIONS_COLOR, 'No Citi Bike stations',   true);
 }
