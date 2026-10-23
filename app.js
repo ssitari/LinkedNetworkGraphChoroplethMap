@@ -977,7 +977,7 @@ function quantileClasses(values, fmt) {
   if (!values.length) return NO_CLASSES;
   const scale = d3.scaleQuantile().domain(values).range(SEQ_COLORS);
   return { color: scale, rows: classRows(values, scale, SEQ_COLORS, fmt, false),
-           note: 'Quantile classes' };
+           note: 'Ranges adjust to current view' };
 }
 
 // Empty classes are kept: the breaks are fixed, and an empty "about as
