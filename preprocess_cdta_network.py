@@ -27,11 +27,20 @@ stations_f = root / "stations_2025.csv"
 od_f       = root / "od_station_month_dow.csv"
 out_f      = root / "cdta_network_data.json"
 
+# ── Station IDs ──────────────────────────────────────────────────────────────
+# Citi Bike IDs look like "6948.10", but wherever an ID is parsed as a number
+# the trailing zero is lost and it becomes "6948.1". The 2025 OD table has both
+# spellings for the same 101 stations: build_od_tables.py let DuckDB guess
+# types file by file, and files read as numeric dropped the zero. Matching
+# the raw strings silently dropped ~10% of trips. Restore the second decimal.
+def canon(sid):
+    return sid + "0" if re.fullmatch(r"\d+\.\d", sid) else sid
+
 # ── Build station → CDTA map ─────────────────────────────────────────────────
 station_cdta = {}   # station_id → (cdta_id, cdta_name)
 with open(stations_f, newline="", encoding="utf-8") as f:
     for row in csv.DictReader(f):
-        sid = row["station_id"]
+        sid = canon(row["station_id"])
         station_cdta[sid] = (row["CDTA2020"], row["CDTAName"])
 
 # ── Collect unique CDTAs ──────────────────────────────────────────────────────
@@ -59,14 +68,16 @@ def short_name(cdta_id, full_name):
 
 # ── Aggregate OD trips to CDTA×month ─────────────────────────────────────────
 edges = defaultdict(lambda: {"ab": [0] * N, "ba": [0] * N})
-skipped = 0
+skipped = skipped_trips = total_trips = 0
 
 with open(od_f, newline="", encoding="utf-8") as f:
     for row in csv.DictReader(f):
-        s_id = row["start_station_id"]
-        e_id = row["end_station_id"]
+        s_id = canon(row["start_station_id"])
+        e_id = canon(row["end_station_id"])
+        total_trips += int(row["trip_count"])
         if s_id not in station_cdta or e_id not in station_cdta:
             skipped += 1
+            skipped_trips += int(row["trip_count"])
             continue
 
         s_cdta = station_cdta[s_id][0]
@@ -107,5 +118,8 @@ size_kb = out_f.stat().st_size / 1024
 print(f"Nodes  : {len(result['nodes'])}")
 print(f"Links  : {len(result['links'])}")
 print(f"Output : {out_f.name} ({size_kb:.1f} KB)")
+# Reported as a share of trips, not rows: a silent 10% loss is what the
+# ID-spelling bug looked like from here.
 if skipped:
-    print(f"Skipped: {skipped} rows (station not in stations_2025.csv)")
+    print(f"Skipped: {skipped:,} rows, {skipped_trips:,} trips "
+          f"({100 * skipped_trips / total_trips:.2f}%) -- station not in stations_2025.csv")

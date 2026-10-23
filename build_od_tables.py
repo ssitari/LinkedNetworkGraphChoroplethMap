@@ -35,9 +35,9 @@ con = duckdb.connect()
 # ── Stations lookup ──────────────────────────────────────────────────────────
 con.execute(f"""
     CREATE TABLE stations AS
-    SELECT CAST(station_id AS VARCHAR) AS station_id,
+    SELECT station_id,
            NTA2020, NTAName, CDTA2020, CDTAName, MODZCTA, GEOID
-    FROM read_csv_auto('{stations_str}')
+    FROM read_csv_auto('{stations_str}', all_varchar=true)
 """)
 n_stations = con.execute("SELECT COUNT(*) FROM stations").fetchone()[0]
 print(f"Stations loaded: {n_stations:,}")
@@ -55,7 +55,10 @@ con.execute(f"""
         MONTH(started_at::TIMESTAMP)      AS month,
         DAYOFWEEK(started_at::TIMESTAMP)  AS day_of_week,
         COUNT(*)                          AS trip_count
-    FROM read_csv_auto('{trip_glob}', union_by_name=true, ignore_errors=true)
+    -- Station IDs must be read as text. Left to guess, DuckDB types the column
+    -- per file, and files read as numeric turn "6948.10" into "6948.1".
+    FROM read_csv_auto('{trip_glob}', union_by_name=true, ignore_errors=true,
+                       types={{'start_station_id': 'VARCHAR', 'end_station_id': 'VARCHAR'}})
     WHERE start_station_id IS NOT NULL
       AND end_station_id   IS NOT NULL
       AND CAST(start_station_id AS VARCHAR) != CAST(end_station_id AS VARCHAR)

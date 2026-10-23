@@ -25,7 +25,8 @@ edge filter, and the node/map labelling have all been reworked; see the commit h
 changed and why.
 
 The `nta/` folder holds an earlier version of the same idea built on Neighborhood Tabulation Areas
-(NTAs) instead of CDTAs. It is superseded by the root version and kept only for reference.
+(NTAs) instead of CDTAs. It is superseded by the root version and kept only for reference; its data
+predates the station-ID fix described under [Data pipeline](#data-pipeline) and undercounts trips.
 
 ---
 
@@ -76,9 +77,9 @@ log E[trips_ij] = a_i + a_j + f(km_ij)
 - **`f(km)`** — distance between district centroids, as a piecewise-linear curve in log(km) that
   can bend at 2, 4, 8 and 16 km. A single power law cannot fit both ends: the curve that fits the
   busy short pairs decays too slowly at range. For 2025 the fitted slope is roughly flat under 2 km,
-  then steepens to −1.7, −3.6, −4.2 and −5.8 by segment — about what you would expect of a bicycle.
+  then steepens to −1.7, −3.6, −4.3 and −5.6 by segment — about what you would expect of a bicycle.
 
-Over 2025 the model explains **95.7% of the deviance** (the Poisson analogue of R²), and actual and
+Over 2025 the model explains **95.8% of the deviance** (the Poisson analogue of R²), and actual and
 expected trips agree to within about 10% in every distance band out to 20 km.
 
 The model is fitted in the browser, by Newton-Raphson, over whichever period is selected and every
@@ -88,11 +89,11 @@ without moving the yardstick.
 ### What it shows
 
 Over-connected pairs (orange edges, red on the map) are corridors. Washington Heights–Inwood rides to
-the Financial District at 11.6× expected, and to Chelsea, SoHo and Midtown at 4–5×: that is the
+the Financial District at 10.8× expected, and to Chelsea, SoHo and Midtown at 4–5×: that is the
 Hudson River Greenway. Williamsburg–Greenpoint to Astoria runs at 2.1×, across the Pulaski Bridge.
 
 Under-connected pairs (blue) are mostly water. Harlem, East Harlem and Mott Haven to Astoria sit at
-0.1× — close as the crow flies, a long way by bike. Park Slope to the Financial District is 0.17×.
+0.1× — close as the crow flies, a long way by bike. Park Slope to the Financial District is 0.18×.
 
 With nothing selected, the map shows each district's **typical miss**: the trip-weighted average of
 how far its pairs sit from expected, as a factor. It is highest where straight-line distance is the
@@ -111,7 +112,7 @@ poorest guide to where riders go — Washington Heights, Astoria, Long Island Ci
 - **Residuals are a property of the unordered pair**, so the departures/arrivals control does not
   apply to them; it keeps sizing nodes by trips.
 - **The geography is coarse for bike trips.** The median Citi Bike trip is about 1.6 km in a straight
-  line, and 34% of trips start and end in the same CDTA, so they never appear in the network.
+  line, and 38% of trips start and end in the same CDTA, so they never appear in the network.
 
 ---
 
@@ -137,8 +138,14 @@ station-level file is roughly 400 MB. To regenerate them:
    the script to wherever your trip CSVs live.
 2. **`preprocess_cdta_network.py`** — rolls the station-level table up to CDTA × month and writes
    `cdta_network_data.json`, the file the visualization actually loads. Intra-CDTA trips are dropped,
-   and so are trips from stations missing in `stations_2025.csv` — about 9.7% of 2025 trips, not yet
-   investigated.
+   as are trips from stations not in `stations_2025.csv` (0.1%, mostly Jersey City and Hoboken).
+
+   **Station IDs are text, not numbers.** Citi Bike IDs look like `6948.10`; anywhere one is read as
+   a number it becomes `6948.1`. An earlier build lost about 10% of trips this way — the 101 stations
+   whose IDs end in 0 appeared under two spellings, and only one of them matched the lookup — and the
+   loss was uneven, from under 1% in some districts to 22% in Elmhurst–Corona. The lookup now stores
+   the full IDs, `build_od_tables.py` reads them as text, and `preprocess_cdta_network.py` restores
+   any lost zero before matching and reports what it skips as a share of trips.
 3. **`nta/preprocess_network.py`** — the equivalent step for the older NTA version, reading
    `od_nta_month_dow.csv` and writing `nta/network_data.json`.
 4. **`simplify_geojson.py`** — thins `CDTAs.geojson` for web delivery. The raw QGIS export is
