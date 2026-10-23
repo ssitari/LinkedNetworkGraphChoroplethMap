@@ -1,12 +1,9 @@
-# Linked Network Graph + Choropleth Map
+# Linked Network Graph + Choropleth Map: NYC Citi Bike Rides (CDTA level)
 
-A dual-panel D3 visualization pairing a force-directed network graph with a
-choropleth map of the same geography. Selecting a node in the network re-colors the map by that node's
-edge weights, so the abstract topology of the graph and the real geography of the places it describes
-can be read against each other.
+This is my attempt to create a visualization that links an interactive force-directed network graph with a choropleth map. The network nodes represent the map geography and the geographies are linked such that selecting a node in the network selects it in the map. The edges in the graph represent a relation between the geographies, and the edge-weight in the chart is represented as a color in the map and the node, allowing the places and their relations to be read against each other. 
 
-The test case is **NYC Citi Bike trips for 2025**, aggregated to Community District Tabulation Areas
-(CDTAs). Nodes are CDTAs, edges are trips between them.
+This example is my first attempt at this visualization and the data is **NYC Citi Bike trips for 2025**, aggregated to Community District Tabulation Areas
+(CDTAs). Nodes are the CDTAs, edges are either the trips between them or a measure of observed trips vs. expected trips (see below for the details of this estimation).  I plan to use this concept with other data and geographies and will post examples in associated repos here. 
 
 Built with [D3.js](https://d3js.org). No build step — plain HTML, CSS, and JavaScript.
 
@@ -23,8 +20,9 @@ shows a notice rather than a cramped layout.
 
 ## Status
 
-Working and published. The geometry, the edge filter, and the node/map labelling have all been
-reworked; see the commit history for what changed and why.
+Working and published. The gravity model, the classed legends, the tooltips, the geometry, the
+edge filter, and the node/map labelling have all been reworked; see the commit history for what
+changed and why.
 
 The `nta/` folder holds an earlier version of the same idea built on Neighborhood Tabulation Areas
 (NTAs) instead of CDTAs. It is superseded by the root version and kept only for reference.
@@ -33,7 +31,9 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
 
 ## What it does
 
-- **Force-directed network** — one node per CDTA, edges weighted by trip volume between them
+- **Force-directed network** — one node per CDTA, edges weighted by trip volume between them or,
+  in vs. expected mode, by how far each pair sits above or below its prediction
+- **Linked selection** — click a node or a district in either panel to select it in both
 - **Linked choropleth** — the map re-colors on interaction to show trip volumes relative to the
   selected node. Counts use five quantile classes (ColorBrewer YlGnBu); vs. expected uses
   ColorBrewer RdBu with fixed breaks at 0.5, 0.8, 1.25 and 2×. Partner nodes in the network take
@@ -45,6 +45,8 @@ The `nta/` folder holds an earlier version of the same idea built on Neighborhoo
 - **Edge filter** — a percentile slider that hides the weakest edges. It resolves to a trip
   count against whichever period is selected, so the filter stays meaningful when you switch months
 - **Borough coloring** — nodes colored by borough when no selection is active
+- **Tooltips** — hovering a district shows its trips with the districts on screen; with a district
+  selected, hovering any other shows only the trips between the two, in each direction
 - **Edge weight** — raw trips, or each pair's trips divided by what a gravity model predicts
 
 ---
@@ -134,7 +136,9 @@ station-level file is roughly 400 MB. To regenerate them:
    × month × day of week, then re-aggregates to NTA level. Set the `DATA_DIR` constant at the top of
    the script to wherever your trip CSVs live.
 2. **`preprocess_cdta_network.py`** — rolls the station-level table up to CDTA × month and writes
-   `cdta_network_data.json`, the file the visualization actually loads. Intra-CDTA trips are dropped.
+   `cdta_network_data.json`, the file the visualization actually loads. Intra-CDTA trips are dropped,
+   and so are trips from stations missing in `stations_2025.csv` — about 9.7% of 2025 trips, not yet
+   investigated.
 3. **`nta/preprocess_network.py`** — the equivalent step for the older NTA version, reading
    `od_nta_month_dow.csv` and writing `nta/network_data.json`.
 4. **`simplify_geojson.py`** — thins `CDTAs.geojson` for web delivery. The raw QGIS export is
@@ -170,6 +174,8 @@ Station-to-geography assignments computed by spatial join in [QGIS](https://qgis
 ---
 
 ## Acknowledgements
+
+Color schemes from [ColorBrewer](https://colorbrewer2.org) by Cynthia Brewer.
 
 Most of the code written with assistance from [Claude](https://claude.ai) (Anthropic).
 
