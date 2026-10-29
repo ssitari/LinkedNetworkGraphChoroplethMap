@@ -95,8 +95,10 @@ Hudson River Greenway. Williamsburg–Greenpoint to Astoria runs at 2.1×, acros
 Under-connected pairs (blue) are mostly water. Harlem, East Harlem and Mott Haven to Astoria sit at
 0.1× — close as the crow flies, a long way by bike. Park Slope to the Financial District is 0.18×.
 
-With nothing selected, the map shows each district's **typical miss**: the trip-weighted average of
-how far its pairs sit from expected, as a factor. It is highest where straight-line distance is the
+With nothing selected, the map shows each district's **typical gap from expected**: the trip-weighted
+average of how far its pairs sit from expected, as a factor, in either direction. 1× means its riders
+go where size and distance predict; 2× means its pair trips are typically double or half what the
+model expects. It is highest where straight-line distance is the
 poorest guide to where riders go — Washington Heights, Astoria, Long Island City, Mott Haven.
 
 ### Caveats

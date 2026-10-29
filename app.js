@@ -795,7 +795,7 @@ function totalsTooltip(d) {
     `Total: &nbsp;&nbsp;&nbsp;&nbsp;${(out + inn).toLocaleString()}`;
   if (useResidual()) {
     const miss = missByNode()[d.index];
-    if (miss !== null) html += `<br>Typical miss vs. expected: ${miss.toFixed(2)}×`;
+    if (miss !== null) html += `<br>Typical gap from expected: ${miss.toFixed(2)}×`;
   }
   return html;
 }
@@ -1014,7 +1014,7 @@ function renderLegend(el, sections) {
 
 function legendTitle(sel) {
   if (useResidual()) {
-    return sel ? `Vs. expected: trips with ${sel.short_name}` : 'Typical miss vs. expected';
+    return sel ? `Vs. expected: trips with ${sel.short_name}` : 'Typical gap from expected';
   }
   if (sel) {
     const verb = state.mode === 'from' ? 'from' : state.mode === 'to' ? 'to' : 'with';
@@ -1037,8 +1037,13 @@ function updateLegends(sel, valueMap) {
   // Map: the classes, then the selection and the two greys that are not data.
   // "No trips shown" only appears when some served district is actually grey.
   const unshown = simNodes.some(n => n.id !== selectedId && !(n.id in valueMap));
+  // The overview in vs. expected mode needs saying in words: the classes are a
+  // factor in either direction, not trips.
+  const note = !sel && useResidual() && viewClasses.rows.length
+    ? 'How far trips with the districts on show sit from expected, over or under. 1× = as predicted.'
+    : viewClasses.note;
   renderLegend(mapLegend, [
-    { title, note: viewClasses.note, rows: shaped(viewClasses.rows, 'square') },
+    { title, note, rows: shaped(viewClasses.rows, 'square') },
     { rows: shaped([
         ...(selectedRow ? [selectedRow] : []),
         ...(unshown ? [{ label: 'No trips shown', color: NO_TRIPS_COLOR }] : []),
